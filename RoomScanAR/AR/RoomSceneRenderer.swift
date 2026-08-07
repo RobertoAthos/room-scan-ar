@@ -34,6 +34,12 @@ final class RoomSceneRenderer {
     private var edgeNodes: [Entity] = []
     private var labelNodes: [Entity] = []
 
+    /// Duração da animação de subida das paredes.
+    private static let wallRiseDuration: TimeInterval = 0.8
+
+    private var wallsRoot: Entity?
+    private var wallNodes: [ModelEntity] = []
+
     private var elasticNode: ModelEntity?
     private var elasticLabelNode: Entity?
     private var elasticLabelCentimeters: Int?
@@ -91,6 +97,90 @@ final class RoomSceneRenderer {
             root.addChild(label)
             labelNodes.append(label)
         }
+    }
+
+    // MARK: - Paredes 3D
+
+    /// Levanta uma parede por segmento do polígono.
+    ///
+    /// Todas as paredes ficam sob um container posicionado no nível do piso —
+    /// é o pivô da animação de subida.
+    func buildWalls(
+        corners: [SIMD3<Float>],
+        closed: Bool,
+        floorY: Float,
+        ceilingHeight: Float,
+        animated: Bool
+    ) {
+        removeWalls()
+
+        let segmentCount = closed ? corners.count : corners.count - 1
+        guard segmentCount > 0, ceilingHeight > 0 else { return }
+
+        let container = Entity()
+        container.position = SIMD3<Float>(0, floorY, 0)
+        root.addChild(container)
+        wallsRoot = container
+
+        // Uma entidade por parede, e não uma malha única: a Etapa 7 precisa
+        // reconstruir paredes individualmente ao inserir portas e janelas.
+        for index in 0..<segmentCount {
+            let start = corners[index]
+            let end = corners[(index + 1) % corners.count]
+            let panels = WallMeshBuilder.panels(from: start, to: end, ceilingHeight: ceilingHeight)
+            guard let mesh = WallMeshBuilder.mesh(for: panels) else { continue }
+
+            let wall = ModelEntity(mesh: mesh, materials: [Self.wallMaterial()])
+            container.addChild(wall)
+            wallNodes.append(wall)
+        }
+
+        if animated { animateWallRise() }
+    }
+
+    /// Anima a subida das paredes, de rente ao chão até a altura cheia.
+    ///
+    /// A malha é construída já na altura final e o que se anima é a **escala em Y**
+    /// do container, cujo pivô está no piso. Animar os vértices exigiria regerar a
+    /// malha a cada frame; o resultado visual é o mesmo.
+    func animateWallRise() {
+        guard let wallsRoot else { return }
+
+        let target = wallsRoot.transform
+        var flattened = target
+        // Zero exato degenera a matriz de transformação; rente ao chão basta.
+        flattened.scale.y = 0.001
+        wallsRoot.transform = flattened
+
+        _ = wallsRoot.move(
+            to: target,
+            relativeTo: wallsRoot.parent,
+            duration: Self.wallRiseDuration,
+            timingFunction: .easeOut
+        )
+    }
+
+    func removeWalls() {
+        wallsRoot?.removeFromParent()
+        wallsRoot = nil
+        wallNodes.removeAll()
+    }
+
+    /// Material das paredes: claro e translúcido, para o cômodo real continuar
+    /// visível por trás.
+    ///
+    /// `PhysicallyBasedMaterial` em vez de `SimpleMaterial` porque aqui a
+    /// transparência é **declarada** (`blending`), e não inferida do canal alfa
+    /// de uma cor — comportamento que varia entre versões do RealityKit.
+    private static func wallMaterial() -> PhysicallyBasedMaterial {
+        var material = PhysicallyBasedMaterial()
+        material.baseColor = .init(tint: UIColor(white: 0.96, alpha: 1))
+        material.roughness = 0.85
+        material.metallic = 0.0
+        // A geometria é de dupla face, então cada pixel de parede é composto duas
+        // vezes: 0,22 por face resulta em ~0,39 percebidos, perto dos 0,35 pedidos.
+        material.blending = .transparent(opacity: .init(floatLiteral: 0.22))
+        return material
     }
 
     // MARK: - Linha elástica
@@ -183,6 +273,7 @@ final class RoomSceneRenderer {
     // MARK: - Limpeza
 
     func clear() {
+        removeWalls()
         for node in cornerNodes + edgeNodes + labelNodes { node.removeFromParent() }
         cornerNodes.removeAll()
         edgeNodes.removeAll()

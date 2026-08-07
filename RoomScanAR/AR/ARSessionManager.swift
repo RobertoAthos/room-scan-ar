@@ -55,6 +55,8 @@ final class ARSessionManager: NSObject, ObservableObject {
     /// o cômodo ou registrar o canto assim mesmo.
     @Published private(set) var offersAutoClose = false
 
+    @Published private(set) var wallsBuilt = false
+
     /// AR não funciona no Simulator. Quando falso, a interface mostra um aviso
     /// em vez de tentar criar a `ARView` (que aborta no Simulator).
     let isSupported = ARWorldTrackingConfiguration.isSupported
@@ -71,10 +73,18 @@ final class ARSessionManager: NSObject, ObservableObject {
 
     /// Âncora raiz de todo o conteúdo 3D do cômodo.
     ///
-    /// Deliberadamente uma âncora de **mundo**, não uma `AnchorEntity(anchor: planeAnchor)`.
-    /// O ARKit funde plane anchors conforme refina a detecção, e a âncora absorvida
-    /// é *removida* da sessão — levaria junto toda a geometria pendurada nela.
+    /// Respaldada por um `ARAnchor` **rastreado pela sessão**, e não por um
+    /// `AnchorEntity(world:)`. Este último é só um transform fixo no frame da
+    /// sessão: não recebe as correções de deriva do ARKit. Quando o usuário dá a
+    /// volta no cômodo e retorna ao primeiro canto, o ARKit faz *loop closure* e
+    /// reestima o frame do mundo em alguns centímetros — a geometria não-ancorada
+    /// desliza junto, rígida, em relação ao cômodo real.
+    ///
+    /// Também não é uma âncora de plano: o ARKit funde plane anchors conforme
+    /// refina a detecção, e a âncora absorvida é *removida* da sessão, levando
+    /// consigo toda a geometria filha.
     private(set) var contentAnchor: AnchorEntity?
+    private var contentARAnchor: ARAnchor?
 
     // MARK: - Privado
 
@@ -98,7 +108,7 @@ final class ARSessionManager: NSObject, ObservableObject {
 
     /// Planos horizontais observados até agora, por identificador de âncora.
     private var planeSamples: [UUID: PlaneSample] = [:]
-    private var latestCameraY: Float?
+    private var latestCameraPosition: SIMD3<Float>?
 
     /// Área mínima para considerar um plano como piso.
     private static let minFloorArea: Float = 0.5
@@ -135,12 +145,13 @@ final class ARSessionManager: NSObject, ObservableObject {
     /// Recomeça do zero: limpa o modelo, a cena e o rastreamento.
     func reset() {
         planeSamples.removeAll()
-        latestCameraY = nil
+        latestCameraPosition = nil
         floorCandidate = nil
         reticleWorldPoint = nil
         lastElasticEnd = nil
         pendingCorner = nil
         offersAutoClose = false
+        wallsBuilt = false
         reticleState = .searching
         statusMessage = nil
         isFloorLocked = false
@@ -149,10 +160,12 @@ final class ARSessionManager: NSObject, ObservableObject {
 
         renderer?.clear()
         renderer = nil
-        if let contentAnchor {
-            contentAnchor.removeFromParent()
-        }
+        contentAnchor?.removeFromParent()
         contentAnchor = nil
+        if let contentARAnchor {
+            arView?.session.remove(anchor: contentARAnchor)
+        }
+        contentARAnchor = nil
         runSession(resetting: true)
     }
 
@@ -164,20 +177,52 @@ final class ARSessionManager: NSObject, ObservableObject {
     /// automático surpreenderia o usuário no meio de uma gravação.
     func confirmFloor() {
         guard let candidate = floorCandidate, phase == .detectingFloor else { return }
-        scan.floorY = candidate.y
+        installContentAnchor(atWorldY: candidate.y)
+        // A âncora fica exatamente no nível do piso, então no espaço dela o piso
+        // é y = 0. Não há conversão a fazer nem valor a manter sincronizado.
+        scan.floorY = 0
         isFloorLocked = true
-        installContentAnchor(atY: candidate.y)
         phase = .markingCorners
     }
 
-    private func installContentAnchor(atY y: Float) {
+    private func installContentAnchor(atWorldY worldY: Float) {
         guard let arView, contentAnchor == nil else { return }
-        // Âncora na origem do mundo: os filhos recebem coordenadas de mundo
-        // absolutas, iguais às que guardamos em `RoomScan.corners`.
-        let anchor = AnchorEntity(world: SIMD3<Float>(0, 0, 0))
-        arView.scene.addAnchor(anchor)
-        contentAnchor = anchor
-        renderer = RoomSceneRenderer(root: anchor)
+
+        // Posiciona a âncora ao nível do piso, sob a posição atual da câmera.
+        // Ancorar perto do conteúdo importa: uma correção de deriva que envolva
+        // rotação vira erro de posição proporcional à distância até a âncora.
+        var transform = matrix_identity_float4x4
+        transform.columns.3.x = latestCameraPosition?.x ?? 0
+        transform.columns.3.y = worldY
+        transform.columns.3.z = latestCameraPosition?.z ?? 0
+
+        let arAnchor = ARAnchor(name: "roomContent", transform: transform)
+        arView.session.add(anchor: arAnchor)
+        contentARAnchor = arAnchor
+
+        // `AnchorEntity(anchor:)` segue as atualizações que o ARKit faz nessa
+        // âncora — é isso que mantém a geometria colada ao cômodo real.
+        let anchorEntity = AnchorEntity(anchor: arAnchor)
+        arView.scene.addAnchor(anchorEntity)
+        contentAnchor = anchorEntity
+        renderer = RoomSceneRenderer(root: anchorEntity)
+    }
+
+    // MARK: - Conversão de coordenadas
+
+    /// Mundo → espaço da âncora de conteúdo.
+    ///
+    /// Os cantos são guardados no espaço da âncora, não em coordenadas de mundo.
+    /// Como o ARKit reposiciona a âncora a cada correção de deriva, coordenadas de
+    /// mundo capturadas em instantes diferentes seriam mutuamente inconsistentes.
+    /// Distâncias e áreas não mudam: a conversão é uma transformação rígida.
+    private func toAnchorSpace(_ worldPoint: SIMD3<Float>) -> SIMD3<Float>? {
+        contentAnchor?.convert(position: worldPoint, from: nil)
+    }
+
+    /// Altura do piso em coordenadas de mundo, que é o frame em que o raycast opera.
+    private var worldFloorY: Float? {
+        contentAnchor?.convert(position: SIMD3<Float>(0, scan.floorY, 0), to: nil).y
     }
 
     // MARK: - Fase: marcação de cantos
@@ -193,16 +238,18 @@ final class ARSessionManager: NSObject, ObservableObject {
     }
 
     var canUndo: Bool {
-        phase == .markingCorners && (scan.isClosed || !scan.corners.isEmpty)
+        phase == .markingCorners && (wallsBuilt || scan.isClosed || !scan.corners.isEmpty)
     }
 
     func markCorner() {
-        guard phase == .markingCorners, !scan.isClosed, let hit = reticleWorldPoint else { return }
+        guard phase == .markingCorners, !scan.isClosed,
+              let hit = reticleWorldPoint,
+              let local = toAnchorSpace(hit) else { return }
 
         // Trava o Y no piso. O raycast contra plano estimado devolve alturas
         // ligeiramente diferentes a cada ponto; sem travar, o polígono fica
         // não-planar e a área do shoelace sai errada.
-        let corner = hit.with(y: scan.floorY)
+        let corner = local.with(y: scan.floorY)
 
         if let last = scan.corners.last, simd_distance(last, corner) < Self.minCornerSpacing {
             setStatus("Canto muito perto do anterior — afaste pelo menos 10 cm")
@@ -249,14 +296,52 @@ final class ARSessionManager: NSObject, ObservableObject {
         UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
 
-    /// Desfaz a última ação: reabre o polígono se ele estava fechado, senão
-    /// remove o último canto.
+    // MARK: - Paredes 3D
+
+    /// Levanta as paredes com a animação de subida.
+    ///
+    /// Acionado por botão, e não automaticamente ao fechar o polígono: além da
+    /// regra de transições explícitas, é o momento visualmente mais forte do app
+    /// e quem grava o vídeo precisa disparar na hora certa.
+    func buildWalls() {
+        guard scan.isClosed, scan.corners.count >= 3 else { return }
+        renderer?.buildWalls(
+            corners: scan.corners,
+            closed: true,
+            floorY: scan.floorY,
+            ceilingHeight: scan.ceilingHeight,
+            animated: true
+        )
+        wallsBuilt = true
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+    }
+
+    /// Repete a animação sem reconstruir a malha — para regravar a tomada.
+    func replayWallRise() {
+        guard wallsBuilt else { return }
+        renderer?.animateWallRise()
+    }
+
+    private func discardWalls() {
+        guard wallsBuilt else { return }
+        renderer?.removeWalls()
+        wallsBuilt = false
+    }
+
+    /// Desfaz a última ação: derruba as paredes se elas estavam de pé, senão
+    /// reabre o polígono, senão remove o último canto.
     func undo() {
         guard phase == .markingCorners else { return }
 
         if offersAutoClose {
             pendingCorner = nil
             offersAutoClose = false
+            return
+        }
+
+        if wallsBuilt {
+            discardWalls()
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
             return
         }
 
@@ -290,7 +375,7 @@ final class ARSessionManager: NSObject, ObservableObject {
     /// todas as medidas. Critério: plano mais **baixo** que tenha área suficiente e
     /// que esteja bem abaixo da câmera (ou que o ARKit tenha classificado como piso).
     private func recomputeFloorCandidate() {
-        let cameraY = latestCameraY
+        let cameraY = latestCameraPosition?.y
         let qualifying = planeSamples.values.filter { sample in
             guard sample.area >= Self.minFloorArea else { return false }
             if sample.isClassifiedFloor { return true }
@@ -319,11 +404,13 @@ final class ARSessionManager: NSObject, ObservableObject {
 
         let cameraPosition = arView.session.currentFrame?.camera.transform.translation
         if let cameraPosition {
-            latestCameraY = cameraPosition.y
+            latestCameraPosition = cameraPosition
             if phase == .detectingFloor { recomputeFloorCandidate() }
         }
 
-        let hit = raycastService.floorHit(in: arView, lockedFloorY: isFloorLocked ? scan.floorY : nil)
+        // O raycast opera em coordenadas de mundo; os cantos vivem no espaço da
+        // âncora. A conversão acontece nas duas fronteiras.
+        let hit = raycastService.floorHit(in: arView, lockedFloorY: isFloorLocked ? worldFloorY : nil)
         reticleWorldPoint = hit?.position
 
         let newState: ReticleState =
@@ -336,8 +423,8 @@ final class ARSessionManager: NSObject, ObservableObject {
         // Linha elástica do último canto até a mira. O destino é travado em
         // `floorY` para que a linha fique deitada no piso.
         if phase == .markingCorners, !scan.isClosed, let last = scan.corners.last {
-            if let point = reticleWorldPoint {
-                lastElasticEnd = point.with(y: scan.floorY)
+            if let point = reticleWorldPoint, let local = toAnchorSpace(point) {
+                lastElasticEnd = local.with(y: scan.floorY)
             }
             // Sem acerto neste frame — normalmente o celular apontando para cima
             // ou para o horizonte — a linha continua visível no último ponto
@@ -347,8 +434,9 @@ final class ARSessionManager: NSObject, ObservableObject {
             renderer?.hideElastic()
         }
 
-        if let cameraPosition {
-            renderer?.faceCamera(from: cameraPosition)
+        // Os rótulos vivem no espaço da âncora, então a câmera precisa vir junto.
+        if let cameraPosition, let localCamera = toAnchorSpace(cameraPosition) {
+            renderer?.faceCamera(from: localCamera)
         }
     }
 

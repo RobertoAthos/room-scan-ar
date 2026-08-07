@@ -155,6 +155,7 @@ struct HUDView: View {
         .background(.black.opacity(0.6), in: .rect(cornerRadius: 16))
         .animation(.easeOut(duration: 0.2), value: manager.offersAutoClose)
         .animation(.easeOut(duration: 0.2), value: manager.scan.isClosed)
+        .animation(.easeOut(duration: 0.2), value: manager.wallsBuilt)
     }
 
     private var headerRow: some View {
@@ -270,15 +271,45 @@ struct HUDView: View {
         }
     }
 
-    /// A medição de pé-direito é a Etapa 5; até lá o fechamento é o fim do fluxo.
+    /// A medição de pé-direito é a Etapa 5; até lá as paredes usam o padrão de 2,60 m.
+    @ViewBuilder
     private var closedNotice: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "checkmark.seal.fill")
-                .foregroundStyle(.green)
-            Text("Toque em Desfazer para reabrir e ajustar os cantos.")
-                .font(.footnote)
-                .foregroundStyle(.white.opacity(0.85))
-            Spacer()
+        if manager.wallsBuilt {
+            VStack(spacing: 10) {
+                HStack(spacing: 0) {
+                    measurement(
+                        label: "Pé-direito",
+                        value: Format.meters(manager.scan.ceilingHeight)
+                    )
+                    Divider().frame(height: 30).overlay(.white.opacity(0.25))
+                    measurement(
+                        label: "Parede (líquida)",
+                        value: Format.squareMeters(manager.scan.netWallArea)
+                    )
+                }
+
+                Button {
+                    manager.replayWallRise()
+                } label: {
+                    Label("Repetir animação", systemImage: "arrow.clockwise")
+                        .font(.subheadline.weight(.medium))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .tint(.white)
+            }
+        } else {
+            Button {
+                manager.buildWalls()
+            } label: {
+                Label("Levantar paredes", systemImage: "square.3.layers.3d.top.filled")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .tint(.blue)
         }
     }
 }

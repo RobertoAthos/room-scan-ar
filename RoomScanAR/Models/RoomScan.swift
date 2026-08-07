@@ -2,11 +2,19 @@ import simd
 
 /// Modelo de dados principal da digitalização.
 ///
-/// Todos os valores estão em **metros**, em coordenadas de mundo do ARKit
-/// (origem fixada no início da sessão). Os cantos são armazenados em ordem
-/// sequencial ao redor do cômodo, todos com o mesmo Y (`floorY`).
+/// Todos os valores estão em **metros**, no espaço da âncora de conteúdo — não
+/// em coordenadas de mundo do ARKit. O ARKit reposiciona suas âncoras a cada
+/// correção de deriva, então pontos capturados em instantes diferentes só são
+/// mutuamente consistentes se expressos em relação à âncora.
+///
+/// Os cantos são armazenados em ordem sequencial ao redor do cômodo, todos com
+/// o mesmo Y (`floorY`).
 struct RoomScan: Sendable {
     var corners: [SIMD3<Float>] = []
+
+    /// Altura do piso no espaço da âncora. A âncora é criada exatamente ao nível
+    /// do piso, então na prática vale 0 — o campo existe para deixar a intenção
+    /// explícita no código de geometria.
     var floorY: Float = 0
     var ceilingHeight: Float = 2.60
     var openings: [Opening] = []
