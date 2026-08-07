@@ -51,6 +51,10 @@ final class ARSessionManager: NSObject, ObservableObject {
     @Published private(set) var statusMessage: String?
     @Published private(set) var isFloorLocked = false
 
+    /// O usuário marcou perto do primeiro canto e precisa decidir entre fechar
+    /// o cômodo ou registrar o canto assim mesmo.
+    @Published private(set) var offersAutoClose = false
+
     /// AR não funciona no Simulator. Quando falso, a interface mostra um aviso
     /// em vez de tentar criar a `ARView` (que aborta no Simulator).
     let isSupported = ARWorldTrackingConfiguration.isSupported
@@ -82,9 +86,15 @@ final class ARSessionManager: NSObject, ObservableObject {
     /// quando a mira momentaneamente sai do piso.
     private var lastElasticEnd: SIMD3<Float>?
 
+    /// Canto aguardando decisão do usuário no diálogo de fechamento automático.
+    private var pendingCorner: SIMD3<Float>?
+
     /// Distância mínima entre cantos consecutivos. Abaixo disso é quase certo
     /// que foi toque acidental, e um segmento degenerado quebraria a geometria.
     private static let minCornerSpacing: Float = 0.10
+
+    /// Raio ao redor do primeiro canto que dispara a oferta de fechamento.
+    private static let autoCloseRadius: Float = 0.30
 
     /// Planos horizontais observados até agora, por identificador de âncora.
     private var planeSamples: [UUID: PlaneSample] = [:]
@@ -129,6 +139,8 @@ final class ARSessionManager: NSObject, ObservableObject {
         floorCandidate = nil
         reticleWorldPoint = nil
         lastElasticEnd = nil
+        pendingCorner = nil
+        offersAutoClose = false
         reticleState = .searching
         statusMessage = nil
         isFloorLocked = false
@@ -172,15 +184,20 @@ final class ARSessionManager: NSObject, ObservableObject {
 
     /// Há superfície válida sob a mira para registrar um canto.
     var canMarkCorner: Bool {
-        phase == .markingCorners && reticleState != .searching
+        phase == .markingCorners && !scan.isClosed && reticleState != .searching
+    }
+
+    /// Três cantos já definem um polígono com área.
+    var canClosePolygon: Bool {
+        phase == .markingCorners && !scan.isClosed && scan.corners.count >= 3
     }
 
     var canUndo: Bool {
-        phase == .markingCorners && !scan.corners.isEmpty
+        phase == .markingCorners && (scan.isClosed || !scan.corners.isEmpty)
     }
 
     func markCorner() {
-        guard phase == .markingCorners, let hit = reticleWorldPoint else { return }
+        guard phase == .markingCorners, !scan.isClosed, let hit = reticleWorldPoint else { return }
 
         // Trava o Y no piso. O raycast contra plano estimado devolve alturas
         // ligeiramente diferentes a cada ponto; sem travar, o polígono fica
@@ -192,20 +209,78 @@ final class ARSessionManager: NSObject, ObservableObject {
             return
         }
 
-        scan.corners.append(corner)
-        setStatus(nil)
-        renderer?.syncCorners(scan.corners, closed: scan.isClosed)
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        // Perto do primeiro canto: quase sempre a intenção é fechar o cômodo.
+        // A especificação pede *oferecer* o fechamento, não fechar sozinho —
+        // então o canto fica pendente até o usuário escolher.
+        if scan.corners.count >= 3,
+           let first = scan.corners.first,
+           simd_distance(first, corner) < Self.autoCloseRadius {
+            pendingCorner = corner
+            offersAutoClose = true
+            return
+        }
+
+        commit(corner)
     }
 
-    func undoLastCorner() {
+    /// Fecha o cômodo no primeiro canto, descartando o canto pendente.
+    func acceptAutoClose() {
+        pendingCorner = nil
+        offersAutoClose = false
+        closePolygon()
+    }
+
+    /// Registra o canto pendente mesmo estando perto do primeiro — cômodos
+    /// estreitos legitimamente têm cantos a menos de 30 cm um do outro.
+    func declineAutoClose() {
+        guard let pendingCorner else { return }
+        self.pendingCorner = nil
+        offersAutoClose = false
+        commit(pendingCorner)
+    }
+
+    func closePolygon() {
+        guard phase == .markingCorners, !scan.isClosed, scan.corners.count >= 3 else { return }
+        scan.isClosed = true
+        lastElasticEnd = nil
+        setStatus(nil)
+        renderer?.syncCorners(scan.corners, closed: true)
+        renderer?.hideElastic()
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+    }
+
+    /// Desfaz a última ação: reabre o polígono se ele estava fechado, senão
+    /// remove o último canto.
+    func undo() {
+        guard phase == .markingCorners else { return }
+
+        if offersAutoClose {
+            pendingCorner = nil
+            offersAutoClose = false
+            return
+        }
+
+        if scan.isClosed {
+            scan.isClosed = false
+            renderer?.syncCorners(scan.corners, closed: false)
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            return
+        }
+
         guard !scan.corners.isEmpty else { return }
         scan.corners.removeLast()
         // Descarta o destino congelado: ele pertencia ao canto que acabou de sair.
         lastElasticEnd = nil
         setStatus(nil)
-        renderer?.syncCorners(scan.corners, closed: scan.isClosed)
+        renderer?.syncCorners(scan.corners, closed: false)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    private func commit(_ corner: SIMD3<Float>) {
+        scan.corners.append(corner)
+        setStatus(nil)
+        renderer?.syncCorners(scan.corners, closed: scan.isClosed)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
     }
 
     /// Reavalia qual plano observado é o melhor candidato a piso.
@@ -260,7 +335,7 @@ final class ARSessionManager: NSObject, ObservableObject {
 
         // Linha elástica do último canto até a mira. O destino é travado em
         // `floorY` para que a linha fique deitada no piso.
-        if phase == .markingCorners, let last = scan.corners.last {
+        if phase == .markingCorners, !scan.isClosed, let last = scan.corners.last {
             if let point = reticleWorldPoint {
                 lastElasticEnd = point.with(y: scan.floorY)
             }

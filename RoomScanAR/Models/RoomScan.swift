@@ -31,3 +31,46 @@ struct RoomScan: Sendable {
         return (corners[index], corners[(index + 1) % corners.count])
     }
 }
+
+// MARK: - Medidas
+
+/// Todas derivadas de `PolygonMath`, que é puro. O modelo não guarda medidas
+/// em cache: são O(n) com n < 20, e cache aqui só criaria estado a invalidar.
+extension RoomScan {
+
+    /// Área do piso pelo *shoelace*.
+    ///
+    /// Com o polígono ainda aberto, a fórmula fecha implicitamente do último
+    /// canto ao primeiro — o que dá exatamente a prévia que o HUD mostra
+    /// durante a marcação.
+    var floorArea: Float {
+        PolygonMath.area(corners)
+    }
+
+    /// Perímetro. Só inclui o segmento de fechamento quando o polígono está fechado.
+    var perimeter: Float {
+        PolygonMath.perimeter(corners, closed: isClosed)
+    }
+
+    var wallLengths: [Float] {
+        PolygonMath.segmentLengths(corners, closed: isClosed)
+    }
+
+    var openingsArea: Float {
+        openings.reduce(0) { $0 + $1.area }
+    }
+
+    /// Área de parede descontando os vãos.
+    var netWallArea: Float {
+        PolygonMath.netWallArea(
+            perimeter: perimeter,
+            ceilingHeight: ceilingHeight,
+            openingsArea: openingsArea
+        )
+    }
+
+    /// Centroide da área, em coordenadas XZ — onde a planta baixa rotula a área.
+    var centroidXZ: SIMD2<Float> {
+        PolygonMath.centroid(corners)
+    }
+}
