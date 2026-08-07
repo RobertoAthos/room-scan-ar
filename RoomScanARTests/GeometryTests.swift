@@ -77,6 +77,108 @@ struct ShoelaceTests {
     }
 }
 
+@Suite("Ponto dentro do polígono")
+struct ContainsTests {
+
+    private let square = [p(0, 0), p(4, 0), p(4, 3), p(0, 3)]
+
+    @Test("O centro está dentro")
+    func center() {
+        #expect(PolygonMath.contains(p(2, 1.5), polygon: square))
+    }
+
+    @Test("Pontos fora, nos quatro lados")
+    func outside() {
+        #expect(!PolygonMath.contains(p(-1, 1.5), polygon: square))
+        #expect(!PolygonMath.contains(p(5, 1.5), polygon: square))
+        #expect(!PolygonMath.contains(p(2, -1), polygon: square))
+        #expect(!PolygonMath.contains(p(2, 4), polygon: square))
+    }
+
+    @Test("O resultado independe do sentido de percurso")
+    func windingIndependent() {
+        let reversed = Array(square.reversed())
+        #expect(PolygonMath.contains(p(2, 1.5), polygon: reversed))
+        #expect(!PolygonMath.contains(p(5, 1.5), polygon: reversed))
+    }
+
+    @Test("A reentrância de um L fica de fora")
+    func concave() {
+        let shape = [p(0, 0), p(3, 0), p(3, 1), p(1, 1), p(1, 2), p(0, 2)]
+        #expect(PolygonMath.contains(p(0.5, 1.5), polygon: shape))
+        // Este ponto está dentro do retângulo envolvente, mas fora do L.
+        #expect(!PolygonMath.contains(p(2.5, 1.8), polygon: shape))
+    }
+
+    @Test("Sonda deslocada da parede escolhe o lado de fora")
+    func probeDetectsOutside() {
+        // É exatamente o que a planta baixa faz para orientar as cotas: desloca
+        // 5 cm do meio da parede e testa se caiu dentro.
+        // Parede de baixo do quadrado, de (0,0) a (4,0): o lado de fora é y < 0.
+        #expect(!PolygonMath.contains(p(2, -0.05), polygon: square))
+        #expect(PolygonMath.contains(p(2, 0.05), polygon: square))
+    }
+
+    @Test("Num cômodo estreito a sonda não atravessa para o outro lado")
+    func narrowRoom() {
+        // O caso da tela: 4,28 × 0,87 m. Uma sonda de 5 cm tem que ficar dentro
+        // e não sair pela parede oposta.
+        let narrow = [p(0, 0), p(4.28, 0), p(4.28, 0.87), p(0, 0.87)]
+        #expect(PolygonMath.contains(p(2.14, 0.05), polygon: narrow))
+        #expect(!PolygonMath.contains(p(2.14, -0.05), polygon: narrow))
+        #expect(PolygonMath.contains(p(2.14, 0.82), polygon: narrow))
+        #expect(!PolygonMath.contains(p(2.14, 0.92), polygon: narrow))
+    }
+
+    @Test("Menos de três pontos não contêm nada")
+    func degenerate() {
+        #expect(!PolygonMath.contains(p(0, 0), polygon: [p(0, 0), p(1, 1)]))
+    }
+}
+
+@Suite("Tipos de abertura")
+struct OpeningTypeTests {
+
+    @Test("Só a janela tem peitoril")
+    func sill() {
+        #expect(!OpeningType.door.hasSill)
+        #expect(!OpeningType.slidingDoor.hasSill)
+        #expect(!OpeningType.openGap.hasSill)
+        #expect(OpeningType.window.hasSill)
+    }
+
+    @Test("Vão estreito sugere porta de giro; vão largo, porta de correr")
+    func suggestion() {
+        #expect(OpeningType.suggested(forWidth: 0.80) == .door)
+        #expect(OpeningType.suggested(forWidth: 1.19) == .door)
+        #expect(OpeningType.suggested(forWidth: 1.20) == .slidingDoor)
+        #expect(OpeningType.suggested(forWidth: 2.40) == .slidingDoor)
+    }
+
+    @Test("Portas e vãos descem até o piso")
+    func defaults() {
+        for type in [OpeningType.door, .slidingDoor, .openGap] {
+            expectClose(type.defaultSillHeight, 0)
+            expectClose(type.defaultHeight, 2.10)
+        }
+        expectClose(OpeningType.window.defaultSillHeight, 1.10)
+        expectClose(OpeningType.window.defaultHeight, 1.20)
+    }
+
+    @Test("Vão aberto gera os mesmos painéis que uma porta")
+    func openGapPanels() {
+        // Sem peitoril: a diferença entre vão aberto e porta é só simbólica,
+        // na planta 2D e na cor da moldura — a parede é recortada igual.
+        let panels = WallMeshBuilder.panels(
+            from: SIMD3<Float>(0, 0, 0), to: SIMD3<Float>(4, 0, 0),
+            ceilingHeight: 2.60,
+            cutouts: [.init(distance: 1.0, width: 1.60, sill: 0, top: 2.10)]
+        )
+        #expect(panels.count == 3)
+        #expect(!panels.contains { $0.bottom < 1e-4 && $0.top < 2.0 })
+    }
+}
+
 @Suite("Perímetro")
 struct PerimeterTests {
 

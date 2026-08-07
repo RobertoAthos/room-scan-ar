@@ -97,6 +97,40 @@ enum PolygonMath {
         points.reduce(.zero, +) / Float(points.count)
     }
 
+    // MARK: - Dentro ou fora
+
+    /// Se o ponto está dentro do polígono, por lançamento de raio.
+    ///
+    /// Conta quantas arestas um raio horizontal partindo do ponto atravessa:
+    /// ímpar significa dentro. Funciona para qualquer polígono simples, côncavo
+    /// inclusive, e **independe do sentido de percurso** dos vértices.
+    ///
+    /// É o que permite orientar as cotas da planta baixa sem deduzir handedness
+    /// do sinal da área — dedução que erra quando o sistema de coordenadas de
+    /// destino inverte um eixo, como a tela, cujo Y cresce para baixo.
+    static func contains(_ point: SIMD2<Float>, polygon: [SIMD2<Float>]) -> Bool {
+        guard polygon.count >= 3 else { return false }
+
+        var isInside = false
+        var previous = polygon.count - 1
+
+        for current in polygon.indices {
+            let a = polygon[current]
+            let b = polygon[previous]
+
+            // A aresta cruza a horizontal que passa pelo ponto?
+            let straddles = (a.y > point.y) != (b.y > point.y)
+            if straddles {
+                // X do cruzamento, por interpolação linear na aresta.
+                let crossingX = (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x
+                if point.x < crossingX { isInside.toggle() }
+            }
+            previous = current
+        }
+
+        return isInside
+    }
+
     // MARK: - Paredes
 
     /// Área líquida de parede: perímetro × pé-direito, menos os vãos.

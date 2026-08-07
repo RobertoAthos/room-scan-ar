@@ -77,8 +77,8 @@ struct ResultsView: View {
 
             ForEach(scan.openings) { opening in
                 HStack(spacing: 10) {
-                    Image(systemName: opening.type == .door ? "door.left.hand.closed" : "windshield.front.and.wiper")
-                        .foregroundStyle(opening.type == .door ? .orange : .teal)
+                    Image(systemName: icon(for: opening.type))
+                        .foregroundStyle(tint(for: opening.type))
                         .frame(width: 24)
 
                     VStack(alignment: .leading, spacing: 1) {
@@ -98,10 +98,28 @@ struct ResultsView: View {
 
     private func detail(for opening: Opening) -> String {
         var text = "\(Format.meters(opening.width)) × \(Format.meters(opening.height))"
-        if opening.type == .window {
+        if opening.type.hasSill {
             text += " · peitoril \(Format.meters(opening.sillHeight))"
         }
         return text
+    }
+
+    private func icon(for type: OpeningType) -> String {
+        switch type {
+        case .door:        "door.left.hand.closed"
+        case .slidingDoor: "door.sliding.left.hand.closed"
+        case .openGap:     "rectangle.portrait.and.arrow.right"
+        case .window:      "window.vertical.closed"
+        }
+    }
+
+    private func tint(for type: OpeningType) -> Color {
+        switch type {
+        case .door:        .orange
+        case .slidingDoor: .purple
+        case .openGap:     .gray
+        case .window:      .teal
+        }
     }
 
     // MARK: - Exportação

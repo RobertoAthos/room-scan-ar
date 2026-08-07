@@ -180,7 +180,7 @@ final class RoomSceneRenderer {
             WallGeometry.point(onWallFrom: wallStart, to: wallEnd, distance: left, height: top),
         ]
 
-        let color: UIColor = opening.type == .door ? .systemOrange : .systemTeal
+        let color = Self.frameColor(for: opening.type)
         for index in 0..<4 {
             let line = ModelEntity(mesh: unitLineMesh, materials: [Self.material(color)])
             Self.placeInSpace(line, from: corners[index], to: corners[(index + 1) % 4])
@@ -225,14 +225,23 @@ final class RoomSceneRenderer {
     /// de uma cor — comportamento que varia entre versões do RealityKit.
     private static func wallMaterial() -> PhysicallyBasedMaterial {
         var material = PhysicallyBasedMaterial()
-        material.baseColor = .init(tint: UIColor(white: 0.96, alpha: 1))
+        material.baseColor = .init(tint: Self.wallTint)
         material.roughness = 0.85
         material.metallic = 0.0
         // A geometria é de dupla face, então cada pixel de parede é composto duas
         // vezes: 0,22 por face resulta em ~0,39 percebidos, perto dos 0,35 pedidos.
-        material.blending = .transparent(opacity: .init(floatLiteral: 0.22))
+        material.blending = .transparent(opacity: .init(floatLiteral: Self.wallOpacityPerFace))
         return material
     }
+
+    /// Azul-ardósia escuro: contrasta com quase qualquer cômodo real sem virar
+    /// preto chapado, e mantém o ambiente legível por trás.
+    private static let wallTint = UIColor(red: 0.10, green: 0.14, blue: 0.22, alpha: 1)
+
+    /// Opacidade **por face**. A malha é de dupla face, então o alfa compõe duas
+    /// vezes: 0,26 por face resulta em ~0,45 percebido. Este é o número a mexer
+    /// se as paredes ficarem escuras ou claras demais no vídeo.
+    private static let wallOpacityPerFace: Float = 0.26
 
     /// Parede selecionada para receber uma abertura.
     private static func highlightMaterial() -> PhysicallyBasedMaterial {
@@ -385,6 +394,17 @@ final class RoomSceneRenderer {
 
     private static func material(_ color: UIColor) -> UnlitMaterial {
         UnlitMaterial(color: color)
+    }
+
+    /// Cor da moldura por tipo de abertura. Contra a parede escura, cores
+    /// saturadas distinguem os tipos de relance em vídeo.
+    private static func frameColor(for type: OpeningType) -> UIColor {
+        switch type {
+        case .door:        .systemOrange
+        case .slidingDoor: .systemPurple
+        case .openGap:     .white
+        case .window:      .systemTeal
+        }
     }
 
     // MARK: - Matemática de posicionamento

@@ -523,6 +523,9 @@ final class ARSessionManager: NSObject, ObservableObject {
 
         draftStart = min(start, clamped)
         draftWidth = width
+        // Sugere o tipo pela largura: acima de 1,20 m uma folha de giro deixa de
+        // fazer sentido, e o padrão vira porta de correr. Continua editável.
+        setDraftType(OpeningType.suggested(forWidth: width))
         setStatus(nil)
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
     }

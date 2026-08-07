@@ -469,7 +469,7 @@ struct HUDView: View {
                 set: { manager.setDraftType($0) }
             )) {
                 ForEach(OpeningType.allCases, id: \.self) { type in
-                    Text(type.label).tag(type)
+                    Text(type.shortLabel).tag(type)
                 }
             }
             .pickerStyle(.segmented)
@@ -479,6 +479,12 @@ struct HUDView: View {
                     .font(.footnote.monospacedDigit())
                     .foregroundStyle(.white.opacity(0.85))
                 Spacer()
+                if manager.draftType == .slidingDoor,
+                   (manager.draftWidth ?? 0) >= OpeningType.slidingSuggestionWidth {
+                    Text("vão largo · sugerido correr")
+                        .font(.caption2)
+                        .foregroundStyle(.purple)
+                }
             }
 
             Stepper(value: $manager.draftHeight, in: 0.4...3.0, step: 0.05) {
@@ -487,7 +493,7 @@ struct HUDView: View {
                     .foregroundStyle(.white)
             }
 
-            if manager.draftType == .window {
+            if manager.draftType.hasSill {
                 Stepper(value: $manager.draftSill, in: 0...2.0, step: 0.05) {
                     Text("Peitoril \(Format.meters(manager.draftSill))")
                         .font(.footnote.monospacedDigit())
