@@ -90,4 +90,94 @@ enum WallMeshBuilder {
     ) -> [Panel] {
         [Panel(start: start, end: end, bottom: 0, top: ceilingHeight)]
     }
+
+    /// Vão a recortar da parede, em coordenadas paramétricas ao longo dela.
+    struct Cutout {
+        /// Distância do canto inicial até a borda esquerda do vão.
+        var distance: Float
+        var width: Float
+        /// Altura da base do vão: 0 para porta, peitoril para janela.
+        var sill: Float
+        /// Altura do topo do vão.
+        var top: Float
+    }
+
+    /// Painéis de uma parede com aberturas.
+    ///
+    /// **Não há operação booleana.** O RealityKit não oferece CSG de forma
+    /// prática, então em vez de recortar a malha a parede é dividida em painéis
+    /// que contornam o vão:
+    ///
+    ///     Porta   →  painel esquerdo | painel direito | verga
+    ///     Janela  →  painel esquerdo | painel direito | verga | peitoril
+    ///
+    /// Visualmente é indistinguível de um recorte real.
+    static func panels(
+        from start: SIMD3<Float>,
+        to end: SIMD3<Float>,
+        ceilingHeight: Float,
+        cutouts: [Cutout]
+    ) -> [Panel] {
+        guard !cutouts.isEmpty else {
+            return panels(from: start, to: end, ceilingHeight: ceilingHeight)
+        }
+        guard let direction = WallGeometry.direction(from: start, to: end) else { return [] }
+        let wallLength = WallGeometry.length(from: start, to: end)
+        guard wallLength > 1e-4 else { return [] }
+
+        func pointAt(_ distance: Float) -> SIMD3<Float> {
+            start + direction * distance
+        }
+
+        // Ordenar é obrigatório: o algoritmo caminha da esquerda para a direita
+        // preenchendo os intervalos entre vãos.
+        let ordered = cutouts
+            .map { cutout -> Cutout in
+                // Recorta o vão aos limites da parede e do pé-direito. Um vão
+                // maior que a parede geraria painéis de comprimento negativo.
+                let distance = min(max(cutout.distance, 0), wallLength)
+                let width = min(max(cutout.width, 0), wallLength - distance)
+                let sill = min(max(cutout.sill, 0), ceilingHeight)
+                let top = min(max(cutout.top, sill), ceilingHeight)
+                return Cutout(distance: distance, width: width, sill: sill, top: top)
+            }
+            .filter { $0.width > 1e-4 }
+            .sorted { $0.distance < $1.distance }
+
+        var result: [Panel] = []
+        var cursor: Float = 0
+
+        for cutout in ordered {
+            // Vãos sobrepostos: ignora a parte já consumida.
+            let left = max(cutout.distance, cursor)
+            let right = max(cutout.distance + cutout.width, cursor)
+            guard right > left else { continue }
+
+            // Trecho cheio antes do vão.
+            if left > cursor + 1e-4 {
+                result.append(Panel(start: pointAt(cursor), end: pointAt(left), bottom: 0, top: ceilingHeight))
+            }
+
+            let gapStart = pointAt(left)
+            let gapEnd = pointAt(right)
+
+            // Peitoril, abaixo do vão. Ausente nas portas, onde sill = 0.
+            if cutout.sill > 1e-4 {
+                result.append(Panel(start: gapStart, end: gapEnd, bottom: 0, top: cutout.sill))
+            }
+            // Verga, acima do vão.
+            if cutout.top < ceilingHeight - 1e-4 {
+                result.append(Panel(start: gapStart, end: gapEnd, bottom: cutout.top, top: ceilingHeight))
+            }
+
+            cursor = right
+        }
+
+        // Trecho cheio depois do último vão.
+        if cursor < wallLength - 1e-4 {
+            result.append(Panel(start: pointAt(cursor), end: pointAt(wallLength), bottom: 0, top: ceilingHeight))
+        }
+
+        return result
+    }
 }

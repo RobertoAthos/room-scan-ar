@@ -44,4 +44,7 @@ struct Opening: Identifiable, Sendable {
 
     /// Área do vão, usada para descontar da área líquida de parede.
     var area: Float { width * height }
+
+    /// Altura do topo do vão a partir do piso.
+    var topHeight: Float { sillHeight + height }
 }

@@ -57,6 +57,14 @@ final class ARSessionManager: NSObject, ObservableObject {
 
     @Published private(set) var wallsBuilt = false
 
+    // Rascunho da abertura em construção.
+    @Published private(set) var selectedWallIndex: Int?
+    @Published private(set) var draftStart: Float?
+    @Published private(set) var draftWidth: Float?
+    @Published private(set) var draftType: OpeningType = .door
+    @Published var draftHeight: Float = OpeningType.door.defaultHeight
+    @Published var draftSill: Float = OpeningType.door.defaultSillHeight
+
     /// AR não funciona no Simulator. Quando falso, a interface mostra um aviso
     /// em vez de tentar criar a `ARView` (que aborta no Simulator).
     let isSupported = ARWorldTrackingConfiguration.isSupported
@@ -106,6 +114,13 @@ final class ARSessionManager: NSObject, ObservableObject {
     /// Raio ao redor do primeiro canto que dispara a oferta de fechamento.
     private static let autoCloseRadius: Float = 0.30
 
+    /// Faixa aceitável de pé-direito. Fora dela é quase certo erro de mira.
+    private static let minCeilingHeight: Float = 2.0
+    private static let maxCeilingHeight: Float = 4.0
+
+    /// Largura mínima de um vão.
+    private static let minOpeningWidth: Float = 0.30
+
     /// Planos horizontais observados até agora, por identificador de âncora.
     private var planeSamples: [UUID: PlaneSample] = [:]
     private var latestCameraPosition: SIMD3<Float>?
@@ -152,6 +167,10 @@ final class ARSessionManager: NSObject, ObservableObject {
         pendingCorner = nil
         offersAutoClose = false
         wallsBuilt = false
+        selectedWallIndex = nil
+        draftStart = nil
+        draftWidth = nil
+        setDraftType(.door)
         reticleState = .searching
         statusMessage = nil
         isFloorLocked = false
@@ -220,6 +239,11 @@ final class ARSessionManager: NSObject, ObservableObject {
         contentAnchor?.convert(position: worldPoint, from: nil)
     }
 
+    /// Direções não sofrem translação, só rotação — daí a sobrecarga própria.
+    private func directionToAnchorSpace(_ worldDirection: SIMD3<Float>) -> SIMD3<Float>? {
+        contentAnchor?.convert(direction: worldDirection, from: nil)
+    }
+
     /// Altura do piso em coordenadas de mundo, que é o frame em que o raycast opera.
     private var worldFloorY: Float? {
         contentAnchor?.convert(position: SIMD3<Float>(0, scan.floorY, 0), to: nil).y
@@ -238,7 +262,16 @@ final class ARSessionManager: NSObject, ObservableObject {
     }
 
     var canUndo: Bool {
-        phase == .markingCorners && (wallsBuilt || scan.isClosed || !scan.corners.isEmpty)
+        switch phase {
+        case .markingCorners:
+            wallsBuilt || scan.isClosed || !scan.corners.isEmpty
+        case .measuringHeight:
+            true
+        case .markingOpenings:
+            selectedWallIndex != nil || draftStart != nil || !scan.openings.isEmpty
+        case .detectingFloor, .results:
+            false
+        }
     }
 
     func markCorner() {
@@ -305,14 +338,8 @@ final class ARSessionManager: NSObject, ObservableObject {
     /// e quem grava o vídeo precisa disparar na hora certa.
     func buildWalls() {
         guard scan.isClosed, scan.corners.count >= 3 else { return }
-        renderer?.buildWalls(
-            corners: scan.corners,
-            closed: true,
-            floorY: scan.floorY,
-            ceilingHeight: scan.ceilingHeight,
-            animated: true
-        )
         wallsBuilt = true
+        renderer?.buildWalls(scan: scan, highlighted: selectedWallIndex, animated: true)
         UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
 
@@ -328,11 +355,250 @@ final class ARSessionManager: NSObject, ObservableObject {
         wallsBuilt = false
     }
 
-    /// Desfaz a última ação: derruba as paredes se elas estavam de pé, senão
-    /// reabre o polígono, senão remove o último canto.
-    func undo() {
-        guard phase == .markingCorners else { return }
+    private func rebuildWalls() {
+        guard wallsBuilt else { return }
+        renderer?.buildWalls(scan: scan, highlighted: selectedWallIndex, animated: false)
+    }
 
+    // MARK: - Snap ortogonal
+
+    func applyOrthogonalSnap() {
+        guard scan.isClosed, !scan.isSnapped else { return }
+
+        switch OrthogonalSnap.snap(scan.corners) {
+        case .success(let corners):
+            // Guarda os originais para que a operação seja reversível.
+            scan.cornersBeforeSnap = scan.corners
+            scan.corners = corners
+            renderer?.syncCorners(corners, closed: true)
+            rebuildWalls()
+            setStatus(nil)
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+
+        case .failure(let failure):
+            setStatus(Self.message(for: failure))
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        }
+    }
+
+    func revertOrthogonalSnap() {
+        guard let original = scan.cornersBeforeSnap else { return }
+        scan.corners = original
+        scan.cornersBeforeSnap = nil
+        renderer?.syncCorners(original, closed: scan.isClosed)
+        rebuildWalls()
+        setStatus(nil)
+    }
+
+    private static func message(for failure: OrthogonalSnap.Failure) -> String {
+        switch failure {
+        case .notEnoughCorners:
+            "São necessários pelo menos três cantos"
+        case .tooIrregular(let ratio):
+            "Marcação muito irregular para alinhar (erro de \(Int((ratio * 100).rounded()))% do perímetro)"
+        case .unbalancedAxis:
+            "O formato do cômodo não fecha em ângulos retos"
+        }
+    }
+
+    // MARK: - Fase: pé-direito
+
+    func beginHeightMeasurement() {
+        guard scan.isClosed else { return }
+        setStatus(nil)
+        phase = .measuringHeight
+    }
+
+    /// Mede o pé-direito mirando no encontro entre parede e teto.
+    ///
+    /// Sem LiDAR não há superfície no teto para fazer raycast. O raio da câmera é
+    /// intersectado com o plano vertical infinito da parede que está sendo mirada,
+    /// e a altura sai da diferença entre o Y da interseção e o do piso.
+    func measureCeilingHeight() {
+        guard phase == .measuringHeight, let arView,
+              let ray = raycastService.cameraRay(in: arView),
+              let origin = toAnchorSpace(ray.origin),
+              let direction = directionToAnchorSpace(ray.direction) else { return }
+
+        guard let aimed = WallGeometry.aimedWall(
+            rayOrigin: origin,
+            rayDirection: direction,
+            corners: scan.corners,
+            closed: scan.isClosed
+        ) else {
+            setStatus("Nenhuma parede sob a mira — aponte para o encontro entre parede e teto")
+            return
+        }
+
+        let height = aimed.point.y - scan.floorY
+        guard height >= Self.minCeilingHeight, height <= Self.maxCeilingHeight else {
+            setStatus("Medida de \(Format.meters(height)) fora da faixa esperada — ajuste a mira ou digite o valor")
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+            return
+        }
+
+        setCeilingHeight(height)
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+    }
+
+    func setCeilingHeight(_ value: Float) {
+        scan.ceilingHeight = min(max(value, Self.minCeilingHeight), Self.maxCeilingHeight)
+        setStatus(nil)
+        rebuildWalls()
+    }
+
+    func confirmCeilingHeight() {
+        guard phase == .measuringHeight else { return }
+        // As paredes podem não ter sido levantadas antes; garante que existam
+        // para que a seleção por toque tenha o que destacar.
+        if !wallsBuilt { buildWalls() }
+        setStatus(nil)
+        phase = .markingOpenings
+    }
+
+    // MARK: - Fase: portas e janelas
+
+    /// Seleciona a parede sob o ponto tocado na tela.
+    ///
+    /// Usa o raio da tela contra os planos verticais das paredes, e não um
+    /// hit-test de colisão: as paredes são remalhadas a cada abertura inserida,
+    /// e manter formas de colisão em dia seria mais frágil que refazer a conta.
+    func selectWall(atScreenPoint point: CGPoint) {
+        guard phase == .markingOpenings, let arView,
+              let ray = arView.ray(through: point),
+              let origin = toAnchorSpace(ray.origin),
+              let direction = directionToAnchorSpace(ray.direction) else { return }
+
+        guard let aimed = WallGeometry.aimedWall(
+            rayOrigin: origin,
+            rayDirection: direction,
+            corners: scan.corners,
+            closed: scan.isClosed
+        ) else {
+            setStatus("Nenhuma parede nesse ponto")
+            return
+        }
+
+        selectedWallIndex = aimed.index
+        draftStart = nil
+        draftWidth = nil
+        setStatus(nil)
+        rebuildWalls()
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    var canMarkOpeningPoint: Bool {
+        phase == .markingOpenings && selectedWallIndex != nil && reticleState != .searching
+    }
+
+    var canConfirmOpening: Bool {
+        selectedWallIndex != nil && draftStart != nil && draftWidth != nil
+    }
+
+    /// Marca uma das duas extremidades do vão, projetando o ponto da mira sobre
+    /// a parede selecionada.
+    func markOpeningPoint() {
+        guard phase == .markingOpenings,
+              let index = selectedWallIndex,
+              let wall = scan.wall(at: index),
+              let hit = reticleWorldPoint,
+              let local = toAnchorSpace(hit),
+              let distance = WallGeometry.project(local, onto: wall.start, wall.end) else { return }
+
+        let wallLength = WallGeometry.length(from: wall.start, to: wall.end)
+        let clamped = min(max(distance, 0), wallLength)
+
+        guard let start = draftStart else {
+            draftStart = clamped
+            setStatus(nil)
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            return
+        }
+
+        let width = abs(clamped - start)
+        guard width >= Self.minOpeningWidth else {
+            setStatus("Vão muito estreito — marque os dois pontos mais afastados")
+            return
+        }
+
+        draftStart = min(start, clamped)
+        draftWidth = width
+        setStatus(nil)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    }
+
+    func setDraftType(_ type: OpeningType) {
+        draftType = type
+        draftHeight = type.defaultHeight
+        draftSill = type.defaultSillHeight
+    }
+
+    func confirmOpening() {
+        guard let index = selectedWallIndex,
+              let start = draftStart,
+              let width = draftWidth else { return }
+
+        scan.openings.append(
+            Opening(
+                wallIndex: index,
+                distanceFromStart: start,
+                width: width,
+                height: draftHeight,
+                sillHeight: draftSill,
+                type: draftType
+            )
+        )
+        clearOpeningDraft()
+        rebuildWalls()
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+    }
+
+    func clearOpeningDraft() {
+        draftStart = nil
+        draftWidth = nil
+        selectedWallIndex = nil
+        setStatus(nil)
+        rebuildWalls()
+    }
+
+    func showResults() {
+        guard scan.isClosed else { return }
+        clearOpeningDraft()
+        phase = .results
+    }
+
+    func backToScanning() {
+        guard phase == .results else { return }
+        phase = .markingOpenings
+    }
+
+    // MARK: - Desfazer
+
+    /// Desfaz a última ação da fase atual.
+    func undo() {
+        switch phase {
+        case .markingOpenings:
+            if selectedWallIndex != nil || draftStart != nil {
+                clearOpeningDraft()
+            } else if !scan.openings.isEmpty {
+                scan.openings.removeLast()
+                rebuildWalls()
+            }
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+
+        case .measuringHeight:
+            phase = .markingCorners
+            setStatus(nil)
+
+        case .markingCorners:
+            undoInMarkingCorners()
+
+        case .detectingFloor, .results:
+            break
+        }
+    }
+
+    private func undoInMarkingCorners() {
         if offersAutoClose {
             pendingCorner = nil
             offersAutoClose = false
@@ -341,6 +607,12 @@ final class ARSessionManager: NSObject, ObservableObject {
 
         if wallsBuilt {
             discardWalls()
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            return
+        }
+
+        if scan.isSnapped {
+            revertOrthogonalSnap()
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             return
         }

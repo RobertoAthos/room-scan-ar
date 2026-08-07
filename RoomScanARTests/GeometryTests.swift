@@ -165,6 +165,266 @@ struct WallAreaTests {
     }
 }
 
+@Suite("Snap ortogonal")
+struct OrthogonalSnapTests {
+
+    /// Ângulo entre segmentos consecutivos, em graus.
+    private func turnAngles(_ points: [SIMD2<Float>]) -> [Float] {
+        (0..<points.count).map { index in
+            let a = points[(index + 1) % points.count] - points[index]
+            let b = points[(index + 2) % points.count] - points[(index + 1) % points.count]
+            let cosine = simd_dot(simd_normalize(a), simd_normalize(b))
+            return acos(min(max(cosine, -1), 1)) * 180 / .pi
+        }
+    }
+
+    @Test("Quadrado levemente torto converge para 90°")
+    func crookedSquare() {
+        // Quadrado de 3 m com os cantos deslocados alguns centímetros, que é o
+        // que uma marcação real produz.
+        let crooked = [
+            p(0.00, 0.00),
+            p(3.04, 0.07),
+            p(2.96, 3.05),
+            p(-0.05, 2.98),
+        ]
+
+        guard case .success(let result) = OrthogonalSnap.snap(crooked) else {
+            Issue.record("o snap deveria ter sido aplicado")
+            return
+        }
+
+        #expect(result.corners.count == 4)
+        for angle in turnAngles(result.corners) {
+            expectClose(angle, 90, "ângulo de \(angle)° deveria ser reto")
+        }
+    }
+
+    @Test("Depois do snap, o polígono fecha exatamente")
+    func closesExactly() {
+        let crooked = [p(0, 0), p(4.03, 0.05), p(3.98, 2.51), p(-0.04, 2.47)]
+
+        guard case .success(let result) = OrthogonalSnap.snap(crooked) else {
+            Issue.record("o snap deveria ter sido aplicado")
+            return
+        }
+
+        // Caminhar por todos os segmentos tem que voltar ao ponto de partida.
+        var walk = SIMD2<Float>.zero
+        for index in result.corners.indices {
+            walk += result.corners[(index + 1) % result.corners.count] - result.corners[index]
+        }
+        expectClose(simd_length(walk), 0, "erro de fechamento residual de \(simd_length(walk)) m")
+    }
+
+    @Test("O snap preserva o primeiro canto")
+    func preservesFirstCorner() {
+        let crooked = [p(1, 2), p(4.03, 2.05), p(3.98, 4.51), p(0.96, 4.47)]
+
+        guard case .success(let result) = OrthogonalSnap.snap(crooked) else {
+            Issue.record("o snap deveria ter sido aplicado")
+            return
+        }
+        expectClose(result.corners[0].x, 1)
+        expectClose(result.corners[0].y, 2)
+    }
+
+    @Test("A área quase não muda num quadrado levemente torto")
+    func areaIsPreserved() {
+        let crooked = [p(0, 0), p(3.04, 0.07), p(2.96, 3.05), p(-0.05, 2.98)]
+        let before = PolygonMath.area(crooked)
+
+        guard case .success(let result) = OrthogonalSnap.snap(crooked) else {
+            Issue.record("o snap deveria ter sido aplicado")
+            return
+        }
+        let after = PolygonMath.area(result.corners)
+        #expect(abs(after - before) / before < 0.05, "área variou de \(before) para \(after)")
+    }
+
+    @Test("Polígono muito irregular é rejeitado")
+    func rejectsIrregular() {
+        // Um triângulo não tem como virar retangular: os 60° arredondam para 90°
+        // e o erro de fechamento estoura o limite.
+        let triangle = [p(0, 0), p(4, 0), p(2, 3.46)]
+
+        guard case .failure(let failure) = OrthogonalSnap.snap(triangle) else {
+            Issue.record("o snap deveria ter sido rejeitado")
+            return
+        }
+        // Rejeitado por erro residual ou por eixo desequilibrado — ambos são
+        // recusas legítimas para esta forma.
+        #expect(failure != .notEnoughCorners)
+    }
+
+    @Test("Menos de três cantos é rejeitado")
+    func rejectsTooFewCorners() {
+        guard case .failure(let failure) = OrthogonalSnap.snap([p(0, 0), p(1, 0)]) else {
+            Issue.record("deveria ter sido rejeitado")
+            return
+        }
+        #expect(failure == .notEnoughCorners)
+    }
+
+    @Test("Um cômodo em L levemente torto também converge")
+    func crookedLShape() {
+        let crooked = [
+            p(0.00, 0.00),
+            p(3.03, 0.04),
+            p(2.98, 1.02),
+            p(1.01, 0.99),
+            p(0.97, 2.03),
+            p(-0.03, 1.98),
+        ]
+
+        guard case .success(let result) = OrthogonalSnap.snap(crooked) else {
+            Issue.record("o snap deveria ter sido aplicado")
+            return
+        }
+        for angle in turnAngles(result.corners) {
+            expectClose(angle, 90, "ângulo de \(angle)° deveria ser reto")
+        }
+    }
+}
+
+@Suite("Painéis de parede")
+struct WallPanelTests {
+
+    private let start = SIMD3<Float>(0, 0, 0)
+    private let end = SIMD3<Float>(4, 0, 0)
+    private let ceiling: Float = 2.60
+
+    @Test("Parede sem aberturas é um único painel de altura cheia")
+    func solidWall() {
+        let panels = WallMeshBuilder.panels(from: start, to: end, ceilingHeight: ceiling)
+        #expect(panels.count == 1)
+        expectClose(panels[0].bottom, 0)
+        expectClose(panels[0].top, ceiling)
+    }
+
+    @Test("Porta gera painel esquerdo, painel direito e verga")
+    func door() {
+        let panels = WallMeshBuilder.panels(
+            from: start, to: end, ceilingHeight: ceiling,
+            cutouts: [.init(distance: 1.0, width: 0.80, sill: 0, top: 2.10)]
+        )
+        // Sem peitoril: esquerdo (0→1), verga (1→1,8 acima de 2,10), direito (1,8→4).
+        #expect(panels.count == 3)
+        // Nenhum painel cobre o vão em altura de passagem.
+        let atDoorHeight = panels.filter { $0.bottom < 1.0 && $0.top > 1.0 }
+        for panel in atDoorHeight {
+            let coversGap = panel.start.x < 1.79 && panel.end.x > 1.01
+            #expect(!coversGap, "um painel fecha o vão da porta")
+        }
+    }
+
+    @Test("Janela gera peitoril além da verga")
+    func window() {
+        let panels = WallMeshBuilder.panels(
+            from: start, to: end, ceilingHeight: ceiling,
+            cutouts: [.init(distance: 1.5, width: 1.20, sill: 1.10, top: 2.30)]
+        )
+        // Esquerdo, peitoril, verga, direito.
+        #expect(panels.count == 4)
+        #expect(panels.contains { abs($0.bottom - 0) < 1e-4 && abs($0.top - 1.10) < 1e-4 })
+        #expect(panels.contains { abs($0.bottom - 2.30) < 1e-4 && abs($0.top - ceiling) < 1e-4 })
+    }
+
+    @Test("Vão que encosta no teto não gera verga")
+    func openingUpToCeiling() {
+        let panels = WallMeshBuilder.panels(
+            from: start, to: end, ceilingHeight: ceiling,
+            cutouts: [.init(distance: 1.0, width: 1.0, sill: 0, top: ceiling)]
+        )
+        #expect(panels.count == 2)
+    }
+
+    @Test("Vão maior que a parede é recortado, sem painel de comprimento negativo")
+    func oversizedOpening() {
+        let panels = WallMeshBuilder.panels(
+            from: start, to: end, ceilingHeight: ceiling,
+            cutouts: [.init(distance: 3.5, width: 10, sill: 0, top: 2.10)]
+        )
+        for panel in panels {
+            let length = simd_distance(panel.start, panel.end)
+            #expect(length > 0, "painel com comprimento \(length)")
+            #expect(panel.top >= panel.bottom)
+        }
+    }
+
+    @Test("Dois vãos na mesma parede geram o trecho cheio entre eles")
+    func twoOpenings() {
+        let panels = WallMeshBuilder.panels(
+            from: start, to: end, ceilingHeight: ceiling,
+            cutouts: [
+                .init(distance: 2.4, width: 0.9, sill: 1.10, top: 2.30),
+                .init(distance: 0.5, width: 0.8, sill: 0, top: 2.10),
+            ]
+        )
+        // Os vãos entram fora de ordem de propósito: o algoritmo tem que ordenar.
+        let fullHeight = panels.filter { $0.bottom < 1e-4 && $0.top > ceiling - 1e-4 }
+        // Trechos cheios: antes do primeiro vão, entre os dois, e depois do segundo.
+        #expect(fullHeight.count == 3)
+    }
+}
+
+@Suite("Geometria de parede")
+struct WallGeometryTests {
+
+    @Test("Projeção sobre a parede devolve a distância do canto inicial")
+    func projection() {
+        let start = SIMD3<Float>(0, 0, 0)
+        let end = SIMD3<Float>(4, 0, 0)
+        // Um ponto fora da parede projeta na perpendicular.
+        let distance = WallGeometry.project(SIMD3<Float>(1.5, 0, 0.6), onto: start, end)
+        expectClose(distance ?? -1, 1.5)
+    }
+
+    @Test("O raio encontra a parede que está sendo mirada")
+    func aimedWall() {
+        // Cômodo 4×3, câmera no meio olhando para a parede 0 (z = 0).
+        let corners = [
+            SIMD3<Float>(0, 0, 0),
+            SIMD3<Float>(4, 0, 0),
+            SIMD3<Float>(4, 0, 3),
+            SIMD3<Float>(0, 0, 3),
+        ]
+        let aimed = WallGeometry.aimedWall(
+            rayOrigin: SIMD3<Float>(2, 1.5, 1.5),
+            rayDirection: simd_normalize(SIMD3<Float>(0, 0.4, -1)),
+            corners: corners,
+            closed: true
+        )
+        #expect(aimed?.index == 0)
+    }
+
+    @Test("Interseção com o plano da parede dá a altura do teto")
+    func ceilingIntersection() {
+        let start = SIMD3<Float>(0, 0, 0)
+        let end = SIMD3<Float>(4, 0, 0)
+        // Da posição (2; 1,5; 2), mirando na parede com inclinação para cima.
+        // A parede está 2 m à frente; subindo 0,55 por metro chega a 1,5 + 1,1 = 2,6.
+        let hit = WallGeometry.intersectVerticalPlane(
+            rayOrigin: SIMD3<Float>(2, 1.5, 2),
+            rayDirection: simd_normalize(SIMD3<Float>(0, 0.55, -1)),
+            wallStart: start,
+            wallEnd: end
+        )
+        expectClose(hit?.point.y ?? -1, 2.6)
+    }
+
+    @Test("Raio paralelo ao plano da parede não intersecta")
+    func parallelRay() {
+        let hit = WallGeometry.intersectVerticalPlane(
+            rayOrigin: SIMD3<Float>(2, 1.5, 2),
+            rayDirection: SIMD3<Float>(1, 0, 0),
+            wallStart: SIMD3<Float>(0, 0, 0),
+            wallEnd: SIMD3<Float>(4, 0, 0)
+        )
+        #expect(hit == nil)
+    }
+}
+
 @Suite("Medidas do RoomScan")
 struct RoomScanMeasurementTests {
 

@@ -50,7 +50,11 @@ struct HUDView: View {
                 floorDetectionPanel
             case .markingCorners:
                 markingCornersPanel
-            default:
+            case .measuringHeight:
+                ceilingHeightPanel
+            case .markingOpenings:
+                openingsPanel
+            case .results:
                 EmptyView()
             }
 
@@ -271,23 +275,9 @@ struct HUDView: View {
         }
     }
 
-    /// A medição de pé-direito é a Etapa 5; até lá as paredes usam o padrão de 2,60 m.
-    @ViewBuilder
     private var closedNotice: some View {
-        if manager.wallsBuilt {
-            VStack(spacing: 10) {
-                HStack(spacing: 0) {
-                    measurement(
-                        label: "Pé-direito",
-                        value: Format.meters(manager.scan.ceilingHeight)
-                    )
-                    Divider().frame(height: 30).overlay(.white.opacity(0.25))
-                    measurement(
-                        label: "Parede (líquida)",
-                        value: Format.squareMeters(manager.scan.netWallArea)
-                    )
-                }
-
+        VStack(spacing: 10) {
+            if manager.wallsBuilt {
                 Button {
                     manager.replayWallRise()
                 } label: {
@@ -298,18 +288,236 @@ struct HUDView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.large)
                 .tint(.white)
+            } else {
+                Button {
+                    manager.buildWalls()
+                } label: {
+                    Label("Levantar paredes", systemImage: "square.3.layers.3d.top.filled")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .tint(.blue)
             }
-        } else {
+
+            closedActions
+        }
+    }
+
+    /// Alinhar em 90° e avançar para o pé-direito, ambos disponíveis assim que
+    /// o polígono fecha.
+    private var closedActions: some View {
+        HStack(spacing: 10) {
+            if manager.scan.isSnapped {
+                Button {
+                    manager.revertOrthogonalSnap()
+                } label: {
+                    Label("Desfazer 90°", systemImage: "arrow.uturn.backward")
+                        .font(.subheadline.weight(.medium))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(.white)
+            } else {
+                Button {
+                    manager.applyOrthogonalSnap()
+                } label: {
+                    Label("Alinhar em 90°", systemImage: "square.grid.2x2")
+                        .font(.subheadline.weight(.medium))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(.white)
+            }
+
             Button {
-                manager.buildWalls()
+                manager.beginHeightMeasurement()
             } label: {
-                Label("Levantar paredes", systemImage: "square.3.layers.3d.top.filled")
+                Label("Pé-direito", systemImage: "arrow.up.and.down")
+                    .font(.subheadline.weight(.medium))
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .tint(.white)
+        }
+    }
+
+    // MARK: - Fase: pé-direito
+
+    private var ceilingHeightPanel: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 0) {
+                measurement(label: "Pé-direito", value: Format.meters(manager.scan.ceilingHeight))
+                Divider().frame(height: 30).overlay(.white.opacity(0.25))
+                measurement(label: "Parede (líquida)", value: Format.squareMeters(manager.scan.netWallArea))
+            }
+
+            Button {
+                manager.measureCeilingHeight()
+            } label: {
+                Label("Medir mirando no teto", systemImage: "scope")
                     .font(.headline)
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .tint(.blue)
+            .tint(.yellow)
+
+            // Fallback manual, obrigatório pela especificação: se a medição
+            // falhar durante a gravação, o usuário ajusta e segue. Stepper em vez
+            // de teclado — o teclado sobre a câmera atrapalha mais do que ajuda.
+            HStack {
+                Text("Ajuste manual")
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.8))
+                Spacer()
+                Stepper(
+                    value: Binding(
+                        get: { manager.scan.ceilingHeight },
+                        set: { manager.setCeilingHeight($0) }
+                    ),
+                    in: 2.0...4.0,
+                    step: 0.05
+                ) {
+                    Text(Format.meters(manager.scan.ceilingHeight))
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(.white)
+                }
+                .fixedSize()
+            }
+
+            Button {
+                manager.confirmCeilingHeight()
+            } label: {
+                Text("Confirmar e seguir")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .tint(.green)
+        }
+        .padding(14)
+        .background(.black.opacity(0.6), in: .rect(cornerRadius: 16))
+    }
+
+    // MARK: - Fase: portas e janelas
+
+    private var openingsPanel: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "door.left.hand.closed")
+                    .foregroundStyle(.orange)
+                Text(openingsHeader)
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+            }
+            .foregroundStyle(.white)
+
+            if manager.selectedWallIndex == nil {
+                Text("Toque numa parede para selecioná-la.")
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.8))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if manager.draftWidth == nil {
+                Button {
+                    manager.markOpeningPoint()
+                } label: {
+                    Text(manager.draftStart == nil ? "Marcar início do vão" : "Marcar fim do vão")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .tint(.yellow)
+                .disabled(!manager.canMarkOpeningPoint)
+            } else {
+                openingEditor
+            }
+
+            Button {
+                manager.showResults()
+            } label: {
+                Label("Ver planta baixa", systemImage: "square.on.square.dashed")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .tint(.green)
+        }
+        .padding(14)
+        .background(.black.opacity(0.6), in: .rect(cornerRadius: 16))
+        .animation(.easeOut(duration: 0.2), value: manager.selectedWallIndex)
+        .animation(.easeOut(duration: 0.2), value: manager.draftWidth)
+    }
+
+    private var openingsHeader: String {
+        if let index = manager.selectedWallIndex {
+            let count = manager.scan.openings.count
+            return "Parede \(index + 1) selecionada · \(count) aberturas"
+        }
+        let count = manager.scan.openings.count
+        return count == 1 ? "1 abertura" : "\(count) aberturas"
+    }
+
+    private var openingEditor: some View {
+        VStack(spacing: 10) {
+            Picker("Tipo", selection: Binding(
+                get: { manager.draftType },
+                set: { manager.setDraftType($0) }
+            )) {
+                ForEach(OpeningType.allCases, id: \.self) { type in
+                    Text(type.label).tag(type)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            HStack {
+                Text("Largura \(Format.meters(manager.draftWidth ?? 0))")
+                    .font(.footnote.monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.85))
+                Spacer()
+            }
+
+            Stepper(value: $manager.draftHeight, in: 0.4...3.0, step: 0.05) {
+                Text("Altura \(Format.meters(manager.draftHeight))")
+                    .font(.footnote.monospacedDigit())
+                    .foregroundStyle(.white)
+            }
+
+            if manager.draftType == .window {
+                Stepper(value: $manager.draftSill, in: 0...2.0, step: 0.05) {
+                    Text("Peitoril \(Format.meters(manager.draftSill))")
+                        .font(.footnote.monospacedDigit())
+                        .foregroundStyle(.white)
+                }
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    manager.confirmOpening()
+                } label: {
+                    Text("Adicionar")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .tint(.orange)
+                .disabled(!manager.canConfirmOpening)
+
+                Button {
+                    manager.clearOpeningDraft()
+                } label: {
+                    Text("Cancelar")
+                        .font(.subheadline)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .tint(.white)
+            }
         }
     }
 }

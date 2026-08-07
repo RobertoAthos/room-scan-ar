@@ -105,37 +105,88 @@ final class RoomSceneRenderer {
     ///
     /// Todas as paredes ficam sob um container posicionado no nível do piso —
     /// é o pivô da animação de subida.
-    func buildWalls(
-        corners: [SIMD3<Float>],
-        closed: Bool,
-        floorY: Float,
-        ceilingHeight: Float,
-        animated: Bool
-    ) {
+    func buildWalls(scan: RoomScan, highlighted: Int?, animated: Bool) {
         removeWalls()
 
-        let segmentCount = closed ? corners.count : corners.count - 1
-        guard segmentCount > 0, ceilingHeight > 0 else { return }
+        let segmentCount = scan.wallCount
+        guard segmentCount > 0, scan.ceilingHeight > 0 else { return }
 
         let container = Entity()
-        container.position = SIMD3<Float>(0, floorY, 0)
+        container.position = SIMD3<Float>(0, scan.floorY, 0)
         root.addChild(container)
         wallsRoot = container
 
-        // Uma entidade por parede, e não uma malha única: a Etapa 7 precisa
-        // reconstruir paredes individualmente ao inserir portas e janelas.
+        // Uma entidade por parede, e não uma malha única: cada parede é
+        // reconstruída sozinha ao ganhar uma porta ou janela, e o destaque de
+        // seleção troca só o material dela.
         for index in 0..<segmentCount {
-            let start = corners[index]
-            let end = corners[(index + 1) % corners.count]
-            let panels = WallMeshBuilder.panels(from: start, to: end, ceilingHeight: ceilingHeight)
+            guard let wall = scan.wall(at: index) else { continue }
+
+            // As alturas dos painéis são relativas ao container, que já está no
+            // piso — daí a base em 0.
+            let start = wall.start.with(y: 0)
+            let end = wall.end.with(y: 0)
+
+            let cutouts = scan.openings
+                .filter { $0.wallIndex == index }
+                .map {
+                    WallMeshBuilder.Cutout(
+                        distance: $0.distanceFromStart,
+                        width: $0.width,
+                        sill: $0.sillHeight,
+                        top: $0.topHeight
+                    )
+                }
+
+            let panels = WallMeshBuilder.panels(
+                from: start,
+                to: end,
+                ceilingHeight: scan.ceilingHeight,
+                cutouts: cutouts
+            )
             guard let mesh = WallMeshBuilder.mesh(for: panels) else { continue }
 
-            let wall = ModelEntity(mesh: mesh, materials: [Self.wallMaterial()])
-            container.addChild(wall)
-            wallNodes.append(wall)
+            let material = index == highlighted ? Self.highlightMaterial() : Self.wallMaterial()
+            let entity = ModelEntity(mesh: mesh, materials: [material])
+            container.addChild(entity)
+            wallNodes.append(entity)
+
+            // Moldura contrastante em volta de cada vão, para o recorte ficar
+            // legível em vídeo — as paredes translúcidas sozinhas não marcam
+            // bem a borda da abertura.
+            for opening in scan.openings where opening.wallIndex == index {
+                addOpeningFrame(opening, wallStart: start, wallEnd: end, to: container)
+            }
         }
 
         if animated { animateWallRise() }
+    }
+
+    private func addOpeningFrame(
+        _ opening: Opening,
+        wallStart: SIMD3<Float>,
+        wallEnd: SIMD3<Float>,
+        to container: Entity
+    ) {
+        let left = opening.distanceFromStart
+        let right = opening.distanceFromStart + opening.width
+        let bottom = opening.sillHeight
+        let top = opening.topHeight
+
+        let corners = [
+            WallGeometry.point(onWallFrom: wallStart, to: wallEnd, distance: left, height: bottom),
+            WallGeometry.point(onWallFrom: wallStart, to: wallEnd, distance: right, height: bottom),
+            WallGeometry.point(onWallFrom: wallStart, to: wallEnd, distance: right, height: top),
+            WallGeometry.point(onWallFrom: wallStart, to: wallEnd, distance: left, height: top),
+        ]
+
+        let color: UIColor = opening.type == .door ? .systemOrange : .systemTeal
+        for index in 0..<4 {
+            let line = ModelEntity(mesh: unitLineMesh, materials: [Self.material(color)])
+            Self.placeInSpace(line, from: corners[index], to: corners[(index + 1) % 4])
+            container.addChild(line)
+            wallNodes.append(line)
+        }
     }
 
     /// Anima a subida das paredes, de rente ao chão até a altura cheia.
@@ -181,6 +232,29 @@ final class RoomSceneRenderer {
         // vezes: 0,22 por face resulta em ~0,39 percebidos, perto dos 0,35 pedidos.
         material.blending = .transparent(opacity: .init(floatLiteral: 0.22))
         return material
+    }
+
+    /// Parede selecionada para receber uma abertura.
+    private static func highlightMaterial() -> PhysicallyBasedMaterial {
+        var material = PhysicallyBasedMaterial()
+        material.baseColor = .init(tint: UIColor.systemYellow)
+        material.roughness = 0.85
+        material.metallic = 0.0
+        material.blending = .transparent(opacity: .init(floatLiteral: 0.35))
+        return material
+    }
+
+    /// Posiciona a linha unitária entre dois pontos quaisquer no espaço.
+    ///
+    /// Diferente de `place`, que só gira em torno de Y por saber que os cantos
+    /// são coplanares: as molduras das aberturas têm arestas verticais.
+    private static func placeInSpace(_ entity: Entity, from start: SIMD3<Float>, to end: SIMD3<Float>) {
+        let delta = end - start
+        let length = simd_length(delta)
+        guard length > 1e-5 else { return }
+        entity.position = (start + end) / 2
+        entity.scale = SIMD3<Float>(1, 1, length)
+        entity.orientation = simd_quatf(from: SIMD3<Float>(0, 0, 1), to: delta / length)
     }
 
     // MARK: - Linha elástica

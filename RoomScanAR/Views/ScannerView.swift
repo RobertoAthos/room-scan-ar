@@ -10,6 +10,9 @@ struct ScannerView: View {
             if manager.isSupported {
                 ARContainerView(manager: manager)
                     .ignoresSafeArea()
+                    // Seleção de parede por toque, só na fase de aberturas. Fora
+                    // dela o gesto atrapalharia os botões do HUD.
+                    .gesture(wallSelectionGesture, isEnabled: manager.phase == .markingOpenings)
             } else {
                 UnsupportedARView()
             }
@@ -20,6 +23,9 @@ struct ScannerView: View {
         }
         .preferredColorScheme(.dark)
         .persistentSystemOverlays(.hidden)
+        .fullScreenCover(isPresented: resultsBinding) {
+            ResultsView(scan: manager.scan) { manager.backToScanning() }
+        }
         .onChange(of: scenePhase) { _, newPhase in
             // A sessão AR precisa parar em segundo plano — o ARKit não mantém
             // rastreamento com o app suspenso, e retomar sem re-executar a
@@ -30,6 +36,20 @@ struct ScannerView: View {
             default:          break
             }
         }
+    }
+
+    private var wallSelectionGesture: some Gesture {
+        SpatialTapGesture(coordinateSpace: .local)
+            .onEnded { value in
+                manager.selectWall(atScreenPoint: value.location)
+            }
+    }
+
+    private var resultsBinding: Binding<Bool> {
+        Binding(
+            get: { manager.phase == .results },
+            set: { if !$0 { manager.backToScanning() } }
+        )
     }
 }
 
