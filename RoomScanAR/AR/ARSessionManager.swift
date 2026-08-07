@@ -76,6 +76,11 @@ final class ARSessionManager: NSObject, ObservableObject {
 
     private weak var arView: ARView?
     private let raycastService = RaycastService()
+    private var renderer: RoomSceneRenderer?
+
+    /// Distância mínima entre cantos consecutivos. Abaixo disso é quase certo
+    /// que foi toque acidental, e um segmento degenerado quebraria a geometria.
+    private static let minCornerSpacing: Float = 0.10
 
     /// Planos horizontais observados até agora, por identificador de âncora.
     private var planeSamples: [UUID: PlaneSample] = [:]
@@ -125,6 +130,8 @@ final class ARSessionManager: NSObject, ObservableObject {
         scan = RoomScan()
         phase = .detectingFloor
 
+        renderer?.clear()
+        renderer = nil
         if let contentAnchor {
             contentAnchor.removeFromParent()
         }
@@ -153,6 +160,45 @@ final class ARSessionManager: NSObject, ObservableObject {
         let anchor = AnchorEntity(world: SIMD3<Float>(0, 0, 0))
         arView.scene.addAnchor(anchor)
         contentAnchor = anchor
+        renderer = RoomSceneRenderer(root: anchor)
+    }
+
+    // MARK: - Fase: marcação de cantos
+
+    /// Há superfície válida sob a mira para registrar um canto.
+    var canMarkCorner: Bool {
+        phase == .markingCorners && reticleState != .searching
+    }
+
+    var canUndo: Bool {
+        phase == .markingCorners && !scan.corners.isEmpty
+    }
+
+    func markCorner() {
+        guard phase == .markingCorners, let hit = reticleWorldPoint else { return }
+
+        // Trava o Y no piso. O raycast contra plano estimado devolve alturas
+        // ligeiramente diferentes a cada ponto; sem travar, o polígono fica
+        // não-planar e a área do shoelace sai errada.
+        let corner = hit.with(y: scan.floorY)
+
+        if let last = scan.corners.last, simd_distance(last, corner) < Self.minCornerSpacing {
+            setStatus("Canto muito perto do anterior — afaste pelo menos 10 cm")
+            return
+        }
+
+        scan.corners.append(corner)
+        setStatus(nil)
+        renderer?.syncCorners(scan.corners, closed: scan.isClosed)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    }
+
+    func undoLastCorner() {
+        guard !scan.corners.isEmpty else { return }
+        scan.corners.removeLast()
+        setStatus(nil)
+        renderer?.syncCorners(scan.corners, closed: scan.isClosed)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 
     /// Reavalia qual plano observado é o melhor candidato a piso.
@@ -189,8 +235,9 @@ final class ARSessionManager: NSObject, ObservableObject {
     fileprivate func onFrame() {
         guard let arView else { return }
 
-        if let cameraTransform = arView.session.currentFrame?.camera.transform {
-            latestCameraY = cameraTransform.columns.3.y
+        let cameraPosition = arView.session.currentFrame?.camera.transform.translation
+        if let cameraPosition {
+            latestCameraY = cameraPosition.y
             if phase == .detectingFloor { recomputeFloorCandidate() }
         }
 
@@ -203,6 +250,18 @@ final class ARSessionManager: NSObject, ObservableObject {
             case .some(let h): h.isPrecise ? .valid : .approximate
             }
         if newState != reticleState { reticleState = newState }
+
+        // Linha elástica do último canto até a mira. O destino também é travado
+        // em `floorY` para que a linha fique deitada no piso.
+        if phase == .markingCorners, let last = scan.corners.last {
+            renderer?.updateElastic(from: last, to: reticleWorldPoint?.with(y: scan.floorY))
+        } else {
+            renderer?.hideElastic()
+        }
+
+        if let cameraPosition {
+            renderer?.faceCamera(from: cameraPosition)
+        }
     }
 
     fileprivate func ingest(planes: [PlaneSample]) {

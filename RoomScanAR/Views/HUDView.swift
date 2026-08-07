@@ -45,30 +45,77 @@ struct HUDView: View {
     @ViewBuilder
     private var bottomBar: some View {
         VStack(spacing: 12) {
-            if manager.phase == .detectingFloor {
+            switch manager.phase {
+            case .detectingFloor:
                 floorDetectionPanel
+            case .markingCorners:
+                markingCornersPanel
+            default:
+                EmptyView()
             }
 
-            HStack {
-                Toggle(isOn: $manager.showDebugOverlays) {
-                    Image(systemName: "ladybug.fill")
-                }
-                .toggleStyle(.button)
-                .tint(.white)
-                .foregroundStyle(.white)
-
-                Spacer()
-
-                Button(role: .destructive) {
-                    manager.reset()
-                } label: {
-                    Label("Reiniciar", systemImage: "arrow.counterclockwise")
-                        .font(.subheadline.weight(.medium))
-                }
-                .buttonStyle(.bordered)
-                .tint(.white)
-            }
+            persistentControls
         }
+    }
+
+    /// Desfazer e Reiniciar acompanham todas as fases, conforme especificação.
+    private var persistentControls: some View {
+        HStack {
+            Toggle(isOn: $manager.showDebugOverlays) {
+                Image(systemName: "ladybug.fill")
+            }
+            .toggleStyle(.button)
+            .tint(.white)
+            .foregroundStyle(.white)
+
+            Spacer()
+
+            Button {
+                manager.undoLastCorner()
+            } label: {
+                Label("Desfazer", systemImage: "arrow.uturn.backward")
+                    .font(.subheadline.weight(.medium))
+            }
+            .buttonStyle(.bordered)
+            .tint(.white)
+            .disabled(!manager.canUndo)
+
+            Button(role: .destructive) {
+                manager.reset()
+            } label: {
+                Label("Reiniciar", systemImage: "arrow.counterclockwise")
+                    .font(.subheadline.weight(.medium))
+            }
+            .buttonStyle(.bordered)
+            .tint(.white)
+        }
+    }
+
+    private var markingCornersPanel: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "circle.dotted.and.circle")
+                    .foregroundStyle(.yellow)
+                Text(manager.scan.corners.count == 1 ? "1 canto marcado" : "\(manager.scan.corners.count) cantos marcados")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+            }
+            .foregroundStyle(.white)
+
+            Button {
+                manager.markCorner()
+            } label: {
+                Text("Marcar canto")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .tint(.yellow)
+            .disabled(!manager.canMarkCorner)
+        }
+        .padding(14)
+        .background(.black.opacity(0.6), in: .rect(cornerRadius: 16))
     }
 
     private var floorDetectionPanel: some View {
