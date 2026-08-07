@@ -34,9 +34,10 @@ final class RoomSceneRenderer {
     private var edgeNodes: [Entity] = []
     private var labelNodes: [Entity] = []
 
-    private var elasticNode: Entity?
+    private var elasticNode: ModelEntity?
     private var elasticLabelNode: Entity?
     private var elasticLabelCentimeters: Int?
+    private var elasticIsStale: Bool?
     private var framesSinceLabelUpdate = 0
 
     init(root: Entity) {
@@ -96,13 +97,16 @@ final class RoomSceneRenderer {
 
     /// Linha do último canto marcado até a posição atual da mira, com o
     /// comprimento em construção rotulado no meio.
-    func updateElastic(from start: SIMD3<Float>?, to end: SIMD3<Float>?) {
+    ///
+    /// - Parameter isStale: o destino é o último ponto válido, não o do frame
+    ///   atual. Renderizada em cinza para deixar claro que parou de acompanhar.
+    func updateElastic(from start: SIMD3<Float>?, to end: SIMD3<Float>?, isStale: Bool) {
         guard let start, let end else {
             hideElastic()
             return
         }
 
-        let line: Entity
+        let line: ModelEntity
         if let elasticNode {
             line = elasticNode
         } else {
@@ -114,7 +118,20 @@ final class RoomSceneRenderer {
         line.isEnabled = true
         Self.place(line, from: start, to: end)
 
-        updateElasticLabel(length: simd_distance(start, end), at: (start + end) / 2)
+        // Trocar material é custoso; só quando o estado realmente muda.
+        if elasticIsStale != isStale {
+            elasticIsStale = isStale
+            line.model?.materials = [Self.material(Self.elasticColor(isStale: isStale))]
+            // Força o rótulo a ser regerado na cor nova.
+            elasticLabelCentimeters = nil
+            framesSinceLabelUpdate = Self.labelUpdateFrameInterval
+        }
+
+        updateElasticLabel(length: simd_distance(start, end), at: (start + end) / 2, isStale: isStale)
+    }
+
+    private static func elasticColor(isStale: Bool) -> UIColor {
+        isStale ? .systemGray : .white
     }
 
     func hideElastic() {
@@ -122,7 +139,7 @@ final class RoomSceneRenderer {
         elasticLabelNode?.isEnabled = false
     }
 
-    private func updateElasticLabel(length: Float, at position: SIMD3<Float>) {
+    private func updateElasticLabel(length: Float, at position: SIMD3<Float>, isStale: Bool) {
         let container: Entity
         if let elasticLabelNode {
             container = elasticLabelNode
@@ -145,7 +162,7 @@ final class RoomSceneRenderer {
         elasticLabelCentimeters = centimeters
 
         while let child = container.children.first { child.removeFromParent() }
-        container.addChild(makeTextModel(Format.meters(length), color: .white))
+        container.addChild(makeTextModel(Format.meters(length), color: Self.elasticColor(isStale: isStale)))
     }
 
     // MARK: - Orientação dos rótulos
@@ -175,6 +192,7 @@ final class RoomSceneRenderer {
         elasticLabelNode?.removeFromParent()
         elasticLabelNode = nil
         elasticLabelCentimeters = nil
+        elasticIsStale = nil
     }
 
     // MARK: - Fábricas

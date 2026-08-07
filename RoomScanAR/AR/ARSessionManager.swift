@@ -78,6 +78,10 @@ final class ARSessionManager: NSObject, ObservableObject {
     private let raycastService = RaycastService()
     private var renderer: RoomSceneRenderer?
 
+    /// Último destino válido da linha elástica, preservado para que ela não pisque
+    /// quando a mira momentaneamente sai do piso.
+    private var lastElasticEnd: SIMD3<Float>?
+
     /// Distância mínima entre cantos consecutivos. Abaixo disso é quase certo
     /// que foi toque acidental, e um segmento degenerado quebraria a geometria.
     private static let minCornerSpacing: Float = 0.10
@@ -124,6 +128,7 @@ final class ARSessionManager: NSObject, ObservableObject {
         latestCameraY = nil
         floorCandidate = nil
         reticleWorldPoint = nil
+        lastElasticEnd = nil
         reticleState = .searching
         statusMessage = nil
         isFloorLocked = false
@@ -196,6 +201,8 @@ final class ARSessionManager: NSObject, ObservableObject {
     func undoLastCorner() {
         guard !scan.corners.isEmpty else { return }
         scan.corners.removeLast()
+        // Descarta o destino congelado: ele pertencia ao canto que acabou de sair.
+        lastElasticEnd = nil
         setStatus(nil)
         renderer?.syncCorners(scan.corners, closed: scan.isClosed)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
@@ -241,7 +248,7 @@ final class ARSessionManager: NSObject, ObservableObject {
             if phase == .detectingFloor { recomputeFloorCandidate() }
         }
 
-        let hit = raycastService.horizontalHit(in: arView)
+        let hit = raycastService.floorHit(in: arView, lockedFloorY: isFloorLocked ? scan.floorY : nil)
         reticleWorldPoint = hit?.position
 
         let newState: ReticleState =
@@ -251,10 +258,16 @@ final class ARSessionManager: NSObject, ObservableObject {
             }
         if newState != reticleState { reticleState = newState }
 
-        // Linha elástica do último canto até a mira. O destino também é travado
-        // em `floorY` para que a linha fique deitada no piso.
+        // Linha elástica do último canto até a mira. O destino é travado em
+        // `floorY` para que a linha fique deitada no piso.
         if phase == .markingCorners, let last = scan.corners.last {
-            renderer?.updateElastic(from: last, to: reticleWorldPoint?.with(y: scan.floorY))
+            if let point = reticleWorldPoint {
+                lastElasticEnd = point.with(y: scan.floorY)
+            }
+            // Sem acerto neste frame — normalmente o celular apontando para cima
+            // ou para o horizonte — a linha continua visível no último ponto
+            // válido, em cinza. Some-la a cada oscilação da mira pisca demais.
+            renderer?.updateElastic(from: last, to: lastElasticEnd, isStale: reticleWorldPoint == nil)
         } else {
             renderer?.hideElastic()
         }
