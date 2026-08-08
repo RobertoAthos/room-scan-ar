@@ -1,321 +1,330 @@
 # RoomScan AR
 
-Digitalização de ambientes em Realidade Aumentada para iOS. O usuário marca os
-cantos de um cômodo apontando o celular, e o app levanta as paredes em 3D,
-calcula as medidas e gera uma planta baixa 2D exportável em PDF.
+**English** · [Português (Brasil)](README.pt-BR.md)
 
-Protótipo acadêmico da disciplina de Realidade Virtual e Aumentada. Sem backend,
-autenticação ou persistência — o foco é a geometria.
+Augmented-reality room scanning for iOS. The user marks a room's corners by
+pointing the phone; the app raises the walls in 3D, computes the measurements and
+produces a 2D floor plan that exports to PDF.
+
+Academic prototype for a Virtual and Augmented Reality course. No backend, no
+authentication, no persistence — the geometry is the point.
+
+The app's interface is in Brazilian Portuguese.
 
 ---
 
-## A restrição que define o projeto
+## The constraint that defines the project
 
-**O aparelho alvo é um iPhone 17 padrão, que não possui LiDAR.**
+**The target device is a standard iPhone 17, which has no LiDAR.**
 
-Isso elimina o caminho fácil. Nada de `RoomPlan`, `sceneReconstruction`,
-`ARMeshAnchor`, `sceneUnderstanding` ou `sceneDepth` — todos exigem o sensor.
+That rules out the easy path. No `RoomPlan`, no `sceneReconstruction`, no
+`ARMeshAnchor`, no `sceneUnderstanding`, no `sceneDepth` — every one of them
+requires the sensor.
 
-Sem malha do ambiente, **a geometria do cômodo é calculada manualmente** a partir
-de raycasts do usuário contra o plano do piso detectado pelo ARKit por odometria
-visual-inercial. É o núcleo intelectual do projeto, e não está terceirizado para
-nenhuma API pronta.
+With no environment mesh, **the room geometry is computed by hand** from user
+raycasts against the floor plane that ARKit detects through visual-inertial
+odometry. That is the intellectual core of the project, and it is not
+outsourced to a ready-made API.
 
-Verificação por grep, ao final de cada etapa:
+Verified by grep at the end of every stage:
 
 ```bash
 grep -rE "RoomPlan|sceneReconstruction|ARMeshAnchor|sceneUnderstanding|sceneDepth" \
   RoomScanAR --include="*.swift"
 ```
 
-Zero ocorrências em código — só em comentários que explicam a ausência.
+Zero hits in code — only in comments explaining the absence.
 
 ---
 
-## Como rodar
+## Running it
 
-**AR não funciona no Simulator.** O app só roda em iPhone físico. A matemática,
-porém, é testável sem aparelho (ver [Testes](#testes)).
+**AR does not work in the Simulator.** The app runs on a physical iPhone only.
+The math, however, is testable without a device (see [Tests](#tests)).
 
-### Requisitos
+### Requirements
 
 | | |
 |---|---|
-| Xcode | 16 ou superior |
-| Swift | 6 (concorrência estrita) |
+| Xcode | 16 or later |
+| Swift | 6 (strict concurrency) |
 | Deployment target | iOS 18.0 |
-| Dependências externas | nenhuma — sem SPM, sem CocoaPods |
+| External dependencies | none — no SPM, no CocoaPods |
 
-### Passo a passo
+### Step by step
 
-1. **Ativar o Modo de Desenvolvedor no iPhone** — só na primeira vez.
-   `Ajustes → Privacidade e Segurança → Modo de Desenvolvedor → ligar → reiniciar`.
+1. **Enable Developer Mode on the iPhone** — first time only.
+   `Settings → Privacy & Security → Developer Mode → on → restart`.
 
-   Sem isso o app instala mas **não abre**, e o erro não é claro.
+   Without it the app installs but **won't launch**, and the error is not
+   informative.
 
-2. **Conectar o iPhone** por cabo de dados, com o aparelho desbloqueado.
-   Cabo USB-C de carga-apenas não serve — o Mac não enumera o dispositivo.
+2. **Connect the iPhone** with a data cable, unlocked. A charge-only USB-C cable
+   won't do — the Mac never enumerates the device.
 
-3. **Abrir e configurar a assinatura**
+3. **Open the project and set up signing**
 
    ```bash
    open RoomScanAR.xcodeproj
    ```
 
-   Em `Signing & Capabilities`, selecionar o seu Team. O bundle id padrão é
-   `vc.bricker.RoomScanAR` — troque se houver conflito.
+   Under `Signing & Capabilities`, pick your Team. The default bundle id is
+   `vc.bricker.RoomScanAR` — change it if it collides.
 
-4. **Selecionar o iPhone** no seletor de destino e rodar com <kbd>⌘R</kbd>.
+4. **Select the iPhone** in the destination picker and run with <kbd>⌘R</kbd>.
 
-5. **Confiar no desenvolvedor** — só na primeira vez.
-   `Ajustes → Geral → Gerenciamento de VPN e Dispositivo → confiar no certificado`.
+5. **Trust the developer certificate** — first time only.
+   `Settings → General → VPN & Device Management → trust the certificate`.
 
-6. **Permitir o acesso à câmera** na primeira abertura.
+6. **Grant camera access** on first launch.
 
-### Pela linha de comando
+### From the command line
 
 ```bash
-# Compilar para dispositivo
+# Build for device
 xcodebuild -scheme RoomScanAR -destination 'generic/platform=iOS' \
   -allowProvisioningUpdates -derivedDataPath /tmp/rsar build
 
-# Instalar no aparelho conectado
+# Install onto the connected device
 xcrun devicectl list devices
 xcrun devicectl device install app --device <ID> \
   /tmp/rsar/Build/Products/Debug-iphoneos/RoomScanAR.app
 ```
 
-### Para o rastreamento funcionar bem
+### Conditions the tracking needs
 
-Sem LiDAR o rastreamento é puramente visual, então o ambiente importa:
+Without LiDAR the tracking is purely visual, so the environment matters:
 
-- **Luz.** Ambiente escuro atrasa ou impede a detecção do piso.
-- **Textura no chão.** Porcelanato branco reflexivo é o pior caso; madeira,
-  tapete ou piso com padrão funcionam muito melhor.
-- **Movimento lento e lateral.** Girar no lugar não gera paralaxe — ande de lado
-  alguns passos apontando para o chão.
-- **Bloqueio Automático em Nunca.** A sessão AR morre se a tela apagar.
+- **Light.** A dark room delays or prevents floor detection.
+- **Texture on the floor.** Glossy white tile is the worst case; wood, rugs or
+  patterned flooring work far better.
+- **Slow, lateral movement.** Turning in place produces no parallax — take a few
+  steps sideways while pointing at the floor.
+- **Auto-Lock set to Never.** The AR session dies when the screen sleeps.
 
 ---
 
-## Fluxo de uso
+## Flow
 
 ```mermaid
 stateDiagram-v2
     [*] --> detectingFloor
-    detectingFloor --> markingCorners: confirmar piso
-    markingCorners --> markingCorners: marcar canto · desfazer
-    markingCorners --> markingCorners: fechar · alinhar 90° · levantar paredes
-    markingCorners --> measuringHeight: definir pé-direito
-    measuringHeight --> markingOpenings: confirmar
-    markingOpenings --> markingOpenings: porta · janela · vão
-    markingOpenings --> results: ver planta baixa
-    results --> markingOpenings: voltar ao AR
+    detectingFloor --> markingCorners: confirm floor
+    markingCorners --> markingCorners: mark corner · undo
+    markingCorners --> markingCorners: close · snap to 90° · raise walls
+    markingCorners --> measuringHeight: set ceiling height
+    measuringHeight --> markingOpenings: confirm
+    markingOpenings --> markingOpenings: door · window · opening
+    markingOpenings --> results: view floor plan
+    results --> markingOpenings: back to AR
 ```
 
-Todas as transições são **explícitas, por botão**. Nenhum avanço automático —
-uma mudança de fase inesperada no meio de uma gravação arruína a demonstração.
+Every transition is **explicit, driven by a button**. Nothing advances on its
+own — an unexpected phase change mid-recording ruins the demo.
 
 ---
 
-## Como a geometria funciona
+## How the geometry works
 
-### Marcação de cantos sem malha do ambiente
+### Marking corners without an environment mesh
 
-O raycast do ARKit só acerta onde já existe **geometria de plano detectada**, o
-que cobre apenas a mancha de chão em volta do usuário. Mirar no rodapé a poucos
-metros falha.
+ARKit's raycast only hits where **detected plane geometry** already exists, which
+covers just the patch of floor around the user. Aiming at a baseboard a few
+metres away fails.
 
-Como o `floorY` é travado na confirmação do piso, o plano do chão é conhecido
-mesmo onde o ARKit não detectou nada. A interseção é analítica:
+Because `floorY` is locked when the floor is confirmed, the floor plane is known
+even where ARKit detected nothing. The intersection is analytic:
 
 ```
-t = (floorY − origem.y) / direção.y
-ponto = origem + t · direção
+t = (floorY − origin.y) / direction.y
+point = origin + t · direction
 ```
 
-Ordem de resolução, por frame:
+Resolution order, per frame:
 
-1. Acerto de geometria de plano detectada, **se estiver no nível do piso** (±15 cm)
-2. Interseção analítica com `y = floorY`
-3. Plano estimado — só antes de o piso ser travado
+1. Detected plane geometry hit, **if it sits at floor level** (±15 cm)
+2. Analytic intersection with `y = floorY`
+3. Estimated plane — only before the floor is locked
 
-O teste de nível no passo 1 não é detalhe: mirando através do cômodo, uma mesa
-detectada no caminho capturaria o raio e viraria "canto".
+The level check in step 1 is not a detail: aiming across the room, a detected
+table plane in the path would capture the ray and become a "corner".
 
-### Área e perímetro
+### Area and perimeter
 
-Área pela fórmula do *shoelace* sobre X e Z:
+Floor area by the *shoelace* formula over X and Z:
 
 ```
 A = |Σ (xᵢ · z₍ᵢ₊₁₎ − x₍ᵢ₊₁₎ · zᵢ)| / 2
 ```
 
-Os pontos são transladados para o primeiro vértice antes da soma, e o acúmulo é
-em `Double`. Numa sessão AR longa os cantos ficam a dezenas de metros da origem;
-multiplicar coordenadas grandes e depois subtrair valores próximos queima a
-precisão do `Float` exatamente onde ela importa.
+Points are translated to the first vertex before summing, and accumulation is in
+`Double`. In a long AR session the corners end up tens of metres from the origin;
+multiplying large coordinates and then subtracting close values burns `Float`
+precision exactly where it matters.
 
-### Pé-direito
+### Ceiling height
 
-Três caminhos, nenhum dependente de LiDAR. Convivem porque falham em situações
-diferentes.
+Three paths, none of them LiDAR-dependent. They coexist because they fail in
+different situations.
 
-**Mira ponto a ponto.** Não há superfície no teto para raycast, então o raio da
-câmera é intersectado com o plano vertical infinito da parede mirada, e a altura
-sai da diferença entre o Y da interseção e o do piso. Como teto inclinado não tem
-um pé-direito único, as medições **acumulam**, com escolha entre mínimo, média e
-máximo.
+**Point-by-point aiming.** There is no ceiling surface to raycast against, so the
+camera ray is intersected with the infinite vertical plane of the aimed wall, and
+the height comes from the difference between the intersection's Y and the floor's.
+Since a sloped ceiling has no single height, measurements **accumulate**, with a
+choice of minimum, average or maximum.
 
-**Plano de teto detectado.** `planeDetection = [.horizontal]` já detecta planos
-voltados para baixo, e o ARKit os classifica como `.ceiling` — sem LiDAR, por
-aglomeração de feature points. Quando existe, é o sinal mais confiável, e vira um
-botão de aplicação direta.
+**Detected ceiling plane.** `planeDetection = [.horizontal]` already picks up
+downward-facing planes, and ARKit classifies them as `.ceiling` — no LiDAR, just
+feature-point clustering. When it exists it is the most reliable signal, and
+becomes a one-tap button.
 
-**Varredura da nuvem de pontos.** `ARFrame.rawFeaturePoints` entrega pontos 3D
-esparsos, também sem LiDAR. Varrendo o cômodo, a distribuição de alturas descreve
-o teto inteiro — o que um teto inclinado exige, já que nele um número único não
-representa nada.
+**Point-cloud sweep.** `ARFrame.rawFeaturePoints` yields sparse 3D points, also
+without LiDAR. Sweeping the room, the height distribution describes the whole
+ceiling — which is what a sloped ceiling demands, since a single number
+represents nothing there.
 
-O filtro tem três etapas, e a ordem importa:
+The filter has three stages, and the order matters:
 
-1. altura dentro da faixa plausível de pé-direito;
-2. dentro do polígono do cômodo — descarta o que está em outro ambiente;
-3. a pelo menos 35 cm das paredes.
+1. height within the plausible ceiling range;
+2. inside the room polygon — discards what belongs to another space;
+3. at least 35 cm away from the walls.
 
-O terceiro é o que faz o resultado valer: pontos de parede também são altos e
-estão dentro do cômodo, e passariam pelos dois primeiros. Sem ele, toda parede
-contaminaria a estatística.
+The third is what makes the result worth anything: wall points are also high and
+also inside the room, and would pass the first two. Without it every wall would
+contaminate the statistic.
 
-O resumo sai em **percentis 10/50/90**, não em mínimo e máximo brutos. A nuvem é
-ruidosa, e um único ponto num lustre ou numa viga solta deslocaria o extremo
-inteiro.
+The summary is reported as **10th/50th/90th percentiles**, not raw min and max.
+The cloud is noisy, and one stray point on a light fixture or a loose beam would
+drag the whole extreme with it.
 
-Cada feature point é contado **uma vez**, por identificador — o ARKit mantém o id
-estável entre frames. Sem isso, ficar parado apontando para um canto
-multiplicaria o peso daquele trecho do teto.
+Each feature point is counted **once**, by identifier — ARKit keeps the id stable
+across frames. Without that, holding still while pointing at one corner would
+multiply the weight of that patch of ceiling.
 
-**Encontro parede-teto.** Segunda leitura da mesma varredura, para quando a face
-do teto não tem textura: em vez de descartar o que está perto da parede, fica só
-com isso.
+**Wall-ceiling junction.** A second reading of the same sweep, for when the
+ceiling face has no texture: instead of discarding what sits near the wall, it
+keeps only that.
 
-Não dá para **simular** textura em software. O ARKit triangula feature points
-fixos no mundo comparando frames de posições diferentes; qualquer coisa
-projetada — a lanterna, por exemplo — acompanha a câmera e não produz ponto de
-referência algum. Um realce especular em movimento chega a piorar o rastreamento.
-Conteúdo AR renderizado também não serve: o rastreador enxerga o feed da câmera,
-não o que desenhamos por cima.
+Texture cannot be **simulated** in software. ARKit triangulates world-fixed
+feature points by comparing frames taken from different positions; anything
+projected — the torch, for instance — travels with the camera and yields no
+landmark at all. A moving specular highlight actively degrades tracking.
+Rendered AR content doesn't help either: the tracker sees the camera feed, not
+what we draw on top of it.
 
-O que existe é a **quina**. Mesmo uma laje perfeitamente lisa tem uma
-descontinuidade de sombreamento onde encontra a parede, e paredes carregam muito
-mais textura que tetos — rodapé, tomada, quadro, móvel encostado.
+What does exist is the **corner line**. Even a perfectly flat ceiling has a
+shading discontinuity where it meets the wall, and walls carry far more texture
+than ceilings — baseboards, outlets, picture frames, furniture pushed against
+them.
 
-Os pontos colhidos ali ficam sobre a parede, em alturas variadas; o teto é o
-**topo** dessa distribuição. Daí o percentil 92 em vez da mediana — e em vez do
-máximo bruto, que pegaria um trilho de cortina ou uma viga isolada.
+The points collected there sit on the wall at varying heights; the ceiling is the
+**top** of that distribution. Hence the 92nd percentile rather than the median —
+and rather than the raw maximum, which would latch onto a curtain rail or an
+isolated beam.
 
-As duas faixas não se sobrepõem: até 25 cm da parede é junção, acima de 35 cm é
-teto.
+The two bands do not overlap: within 25 cm of the wall is junction, beyond 35 cm
+is ceiling.
 
-> Sobra o caso em que **nem a quina** tem contraste — teto e parede da mesma cor,
-> sob luz difusa. Aí só a mira ponto a ponto e o ajuste manual.
+> What remains is the case where **not even the corner line** has contrast —
+> ceiling and wall the same colour under diffuse light. There, only
+> point-by-point aiming and the manual adjustment.
 
-### Paredes 3D
+### 3D walls
 
-Malha construída na altura final; a subida anima a **escala em Y** de ~0 a 1 com
-o pivô no piso. Visual idêntico ao de animar os vértices, sem re-gerar malha por
-frame.
+The mesh is built at final height; the rise animates **Y scale** from ~0 to 1 with
+the pivot on the floor. Visually identical to animating the vertices, without
+regenerating the mesh every frame.
 
-Os triângulos são emitidos nos **dois sentidos de winding**: o usuário está dentro
-do cômodo e precisa enxergar as paredes por dentro. Isso faz o alfa compor duas
-vezes — a opacidade é calibrada por face, não pelo resultado percebido.
+Triangles are emitted in **both winding orders**: the user stands inside the room
+and needs to see the walls from within. That makes alpha compose twice — opacity
+is calibrated per face, not by the perceived result.
 
-O material é `UnlitMaterial`, e não `PhysicallyBasedMaterial`. Com PBR o
-`environmentTexturing` ilumina a parede, e um cômodo claro **lava** a cor
-definida. Unlit entrega exatamente a cor escrita, em qualquer ambiente.
+The material is `UnlitMaterial`, not `PhysicallyBasedMaterial`. Under PBR,
+`environmentTexturing` lights the wall, and a bright room **washes out** the
+colour you set. Unlit delivers exactly the colour written, in any environment.
 
-### Portas, janelas e vãos, sem CSG
+### Doors, windows and openings, without CSG
 
-Quatro tipos: **porta**, **porta de correr**, **vão aberto** e **janela**. Acima de
-1,20 m de largura o tipo sugerido passa a ser porta de correr — uma folha de giro
-desse tamanho não existe na prática.
+Four types: **door**, **sliding door**, **open passage** and **window**. Past
+1.20 m of width the suggested type becomes a sliding door — a swing leaf that
+size doesn't exist in practice.
 
-O RealityKit não oferece operação booleana de forma prática. Em vez de recortar a
-malha, a parede é **dividida em painéis** que contornam o vão:
+RealityKit offers no practical boolean operation. Instead of cutting the mesh,
+the wall is **split into panels** that go around the opening:
 
 ```
-Porta, correr, vão  →  painel esquerdo | painel direito | verga
-Janela              →  painel esquerdo | painel direito | verga | peitoril
+Door, sliding, passage  →  left panel | right panel | header
+Window                  →  left panel | right panel | header | sill panel
 ```
 
-Visualmente indistinguível de um recorte real, e muito mais robusto.
+Visually indistinguishable from a real cut-out, and far more robust.
 
-A marcação é feita por **dois cantos opostos no plano da parede** — o raio da
-câmera é intersectado com o plano vertical dela, o que entrega distância e altura
-de uma vez. Largura, peitoril e altura saem dos dois pontos, do mesmo jeito que
-os cantos definem o polígono do cômodo.
+Openings are marked by **two opposite corners on the wall plane** — the camera
+ray is intersected with its vertical plane, which yields distance and height at
+once. Width, sill and height all come from the two points, the same way corners
+define the room polygon.
 
-Também **diverge da especificação**, que pede dois pontos "ao longo da base".
-Marcar na base descarta a altura por construção: ela teria que vir de um valor
-padrão, e o retângulo cresceria só na horizontal — produzindo proporções que não
-correspondem à abertura real.
+This also **diverges from the specification**, which calls for two points "along
+the base". Marking on the base discards height by construction: it would have to
+come from a default, and the rectangle would grow horizontally only — producing
+proportions that don't match the real opening.
 
-### Snap ortogonal
+### Orthogonal snap
 
-**Diverge da especificação, deliberadamente.** A spec pede distribuir o erro
-residual entre os vértices — o que fecha o polígono mas reintroduz ângulos
-não-retos, pagando o snap sem ficar com 90° exatos.
+**Diverges from the specification, deliberately.** The spec asks for the residual
+error to be distributed across the vertices — which closes the polygon but
+reintroduces non-right angles, paying for the snap without ending up with exact
+90°.
 
-Como após o snap todos os segmentos ficam alinhados aos eixos do referencial de
-θ₀, o polígono é fechado ajustando **apenas os comprimentos**: a soma dos
-percursos num sentido é equilibrada com a do sentido oposto, em cada eixo. O
-fechamento fica exato e os ângulos retos sobrevivem.
+Since every segment ends up axis-aligned in the θ₀ frame after snapping, the
+polygon is closed by adjusting **lengths only**: the sum of travel in one
+direction is balanced against the opposite direction, per axis. Closure becomes
+exact and the right angles survive.
 
-### Planta baixa
+Markings whose residual error exceeds 15% of the perimeter are rejected. The
+operation is reversible.
 
-Desenhada com `Canvas` do SwiftUI, em estética de desenho técnico: fundo branco,
-traço preto, sem cor decorativa.
+### Floor plan
 
-**Orientação automática.** A origem do mundo do ARKit tem heading arbitrário —
-depende de para onde o celular apontava quando a sessão começou. Desenhar em XZ
-cru deixa o cômodo torto na folha, e a caixa envolvente desperdiça espaço na
-diagonal. A planta gira sozinha para alinhar a **parede mais longa** à horizontal.
+Drawn with SwiftUI's `Canvas`, in technical-drawing style: white background,
+black stroke, no decorative colour.
 
-**Rotação manual** por cima disso, com gesto de dois dedos ou botões de 90°. O
-ângulo entra somado dentro do `PlanTransform`, e não como transformação na hora
-de desenhar: a caixa envolvente é recalculada já girada, então a planta continua
-ocupando a página inteira em qualquer orientação, reescalando conforme gira.
+**Automatic orientation.** ARKit's world origin has an arbitrary heading — it
+depends on where the phone pointed when the session started. Drawing raw XZ
+leaves the room skewed on the page, and the bounding box wastes space on the
+diagonal. The plan rotates itself to align the **longest wall** to the horizontal.
 
-Ângulos a menos de 7° de um múltiplo de 90° encostam nele. Planta técnica quase
-sempre quer ortogonal, e acertar 90° exatos com dois dedos é impossível; a
-tolerância é estreita o bastante para não sequestrar um ângulo oblíquo
-intencional.
+**Manual rotation** on top of that, via two-finger gesture or 90° buttons. The
+angle is summed inside `PlanTransform` rather than applied as a draw-time
+transform: the bounding box is recomputed already rotated, so the plan keeps
+filling the page at any orientation, rescaling as it turns.
 
-**O PDF sai na orientação exibida.** Girar só a visualização não teria sentido,
-já que o motivo de girar é exportar orientado.
+Angles within 7° of a multiple of 90° snap to it. A technical plan almost always
+wants orthogonal, and hitting exactly 90° with two fingers is impossible; the
+tolerance is narrow enough not to hijack a deliberately oblique angle.
 
-**As cotas ficam do lado de fora**, e o lado é decidido por um teste de
-ponto-dentro-do-polígono — não pelo sinal da área. A dedução por sinal erra: a
-área é calculada na convenção matemática, com Y para cima, e aplicada na tela,
-cujo Y cresce para baixo. A inversão troca o handedness e joga todas as cotas
-para dentro do cômodo.
+**The PDF comes out at the orientation on screen.** Rotating the view alone would
+be pointless, since the reason to rotate is to export oriented.
 
-O rótulo de área só é desenhado no centroide se couber lá com folga para a
-espessura da parede; caso contrário sai do desenho, como se faz numa planta real
-para ambiente pequeno. O fundo branco dos rótulos apaga o que estiver embaixo —
-convenção de cota técnica —, e deixá-lo cair sobre a parede abriria buracos no
-traço.
+**Dimension labels sit outside**, and the side is decided by a point-in-polygon
+test — not by the sign of the area. Deriving it from the sign gets it wrong: the
+area is computed in the mathematical convention, Y up, and applied on screen,
+where Y grows downward. The flip swaps handedness and throws every label inside
+the room.
 
-**Exportação em PDF vetorial.** O `ImageRenderer` desenha direto num `CGContext`
-de PDF, em vez de gerar bitmap e embrulhá-lo: linhas e texto continuam nítidos
-ampliados ou impressos.
+The area label is only drawn at the centroid if it fits there with clearance for
+the wall thickness; otherwise it moves outside the drawing, as a real plan does
+for small spaces. The white backdrop behind labels erases whatever is underneath
+— standard dimension-text convention — and letting it fall on a wall would punch
+holes in the stroke.
 
-Marcações com erro residual acima de 15% do perímetro são rejeitadas. A operação
-é reversível.
+**Vector PDF export.** `ImageRenderer` draws straight into a PDF `CGContext`
+instead of producing a bitmap and wrapping it: lines and text stay sharp when
+zoomed or printed.
 
 ---
 
-## Arquitetura
+## Architecture
 
 ```
 RoomScanAR/
@@ -327,79 +336,81 @@ RoomScanAR/
 └── Support/      Formatting · SIMDExtensions · PDFExporter
 ```
 
-Decisões que sustentam o resto:
+The decisions everything else rests on:
 
-**`Geometry/` é puro.** Entra array de pontos, sai número. `PolygonMath`,
-`WallGeometry`, `OrthogonalSnap` e `CeilingEstimator` importam `simd` e nada mais
-— é o que permite testar a matemática no Simulator, sem dispositivo.
-(`WallMeshBuilder` é a exceção: importa `RealityKit` porque produz
-`MeshResource`.)
+**`Geometry/` is pure.** Points in, numbers out. `PolygonMath`, `WallGeometry`,
+`OrthogonalSnap` and `CeilingEstimator` import `simd` and nothing else — that is
+what makes the math testable in the Simulator, with no device. (`WallMeshBuilder`
+is the exception: it imports `RealityKit` because it produces `MeshResource`.)
 
-**Conteúdo 3D pendurado numa `ARAnchor` registrada na sessão.** Nem
-`AnchorEntity(world:)`, que é só um transform fixo no frame da sessão e não
-recebe as correções de deriva; nem uma âncora de plano, que o ARKit *remove* ao
-fundir planos vizinhos, levando junto a geometria filha.
+**3D content hangs off an `ARAnchor` registered with the session.** Not
+`AnchorEntity(world:)`, which is merely a fixed transform in the session frame and
+receives no drift correction; and not a plane anchor, which ARKit *removes* when
+it merges neighbouring planes, taking the child geometry with it.
 
-Importa porque, quando o usuário dá a volta no cômodo e retorna ao primeiro
-canto, o ARKit faz *loop closure* e reestima o frame do mundo em alguns
-centímetros. Geometria não-ancorada desliza junto, rígida, em relação ao cômodo
-real. Uma âncora registrada recebe a correção e leva o cômodo com ela.
+It matters because when the user walks around the room and returns to the first
+corner, ARKit performs *loop closure* and re-estimates the world frame by a few
+centimetres. Unanchored geometry slides along with it, rigidly, relative to the
+real room. A registered anchor receives the correction and carries the room with
+it.
 
-Como a âncora fica exatamente no nível do piso, no espaço dela o chão é `y = 0` —
-não há conversão a fazer nem valor a manter sincronizado.
+Since the anchor sits exactly at floor level, the floor is `y = 0` in its space —
+nothing to convert, no value to keep in sync.
 
-**`@MainActor` explícito em AR e UI; `Geometry/` totalmente `nonisolated`.**
-Sem depender de flags novas do compilador, e chamável de qualquer contexto.
+**Explicit `@MainActor` on AR and UI; `Geometry/` entirely `nonisolated`.** No
+reliance on newer compiler flags, and callable from any context.
 
-**Retículo publica um enum grosso.** Publicar o `SIMD3` do raycast redesenharia a
-SwiftUI 60×/s. Só a cor da mira precisa reagir; o ponto exato fica fora do
-`@Published`.
+**The reticle publishes a coarse enum.** Publishing the raycast's `SIMD3` would
+redraw SwiftUI 60×/s. Only the reticle colour needs to react; the exact point
+stays out of `@Published`.
 
 ---
 
-## Testes
+## Tests
 
-72 testes em 13 suítes, cobrindo a geometria pura. ARKit não é testado — não
-faria sentido.
+72 tests across 13 suites, covering the pure geometry. ARKit is not tested — it
+wouldn't make sense.
 
 ```bash
 xcodebuild test -scheme RoomScanAR \
   -destination 'platform=iOS Simulator,name=iPhone 17'
 ```
 
-Rodam no **Simulator**, embora o app seja exclusivo de dispositivo físico: é o
-retorno de isolar a geometria. Para isso o app precisa apenas *abrir* no
-Simulator, o que um guard de `ARWorldTrackingConfiguration.isSupported` garante.
+They run in the **Simulator**, even though the app is device-only: that is the
+payoff of isolating the geometry. For it to work the app merely has to *launch*
+in the Simulator, which an `ARWorldTrackingConfiguration.isSupported` guard
+ensures.
 
-Casos que valem menção:
+Cases worth calling out:
 
-| Suíte | O que protege |
+| Suite | What it protects |
 |---|---|
-| Área pelo shoelace | Quadrado de 1 m², polígono em L, independência do sentido de percurso, precisão a 1200 m da origem |
-| Ponto dentro do polígono | Orienta as cotas da planta; testado no cômodo estreito de 4,28 × 0,87 m que produziu o defeito original |
-| Snap ortogonal | Convergência para 90° em quadrado e em L tortos, fechamento exato, rejeição de forma irregular |
-| Painéis de parede | Porta, janela, vão até o teto, vão maior que a parede, dois vãos na mesma parede |
-| Rotação da planta | Encaixe em 90°, preservação de ângulo oblíquo, normalização de voltas completas |
-| Estimativa de teto | Descarte de pontos de parede e de mobília, resistência a outlier, teto plano vs. inclinado |
-| Distância até a parede | Projeção presa ao trecho do segmento, não à reta infinita |
+| Shoelace area | 1 m² square, L-shaped polygon, winding independence, precision 1200 m from the origin |
+| Point in polygon | Orients the plan's dimension labels; tested on the 4.28 × 0.87 m narrow room that produced the original defect |
+| Orthogonal snap | Convergence to 90° on skewed squares and L shapes, exact closure, rejection of irregular shapes |
+| Wall panels | Door, window, opening up to the ceiling, opening wider than the wall, two openings on one wall |
+| Plan rotation | 90° snapping, preservation of deliberate oblique angles, normalisation of full turns |
+| Ceiling estimation | Rejection of wall and furniture points, outlier resistance, flat vs. sloped ceiling |
+| Distance to boundary | Projection clamped to the segment, not to the infinite line |
 
 ---
 
-## Fora de escopo
+## Out of scope
 
-Deliberadamente ausente: múltiplos cômodos, detecção automática de móveis ou
-paredes, persistência entre sessões, `ARWorldMap`, backend, exportação para DXF,
-IFC ou USDZ, modo escuro, i18n além de pt-BR e acessibilidade VoiceOver.
+Deliberately absent: multiple rooms, automatic furniture or wall detection,
+persistence between sessions, `ARWorldMap`, backend, export to DXF, IFC or USDZ,
+dark mode, localization beyond pt-BR, and VoiceOver accessibility.
 
-## Limitações conhecidas
+## Known limitations
 
-- **Aberturas não são editáveis depois de criadas.** Só `Desfazer`, em ordem
-  inversa.
-- **A precisão degrada com a distância.** Além de 6 m a mira avisa: 1° de erro na
-  pose da câmera vira ~10 cm de erro na posição.
-- **A varredura de teto exige contraste em algum lugar.** Laje lisa não produz
-  feature point na face, e aí a leitura vem da quina com a parede. Quando nem a
-  quina tem contraste — teto e parede da mesma cor sob luz difusa —, resta a mira
-  ponto a ponto e o ajuste manual.
-- **Um raio paralelo ao piso não intersecta o piso.** Apontar para o horizonte ou
-  para cima não marca canto — é geometria, não é contornável.
+- **Openings can't be edited once created.** Only `Undo`, in reverse order.
+- **Precision degrades with distance.** Past 6 m the reticle warns: 1° of camera
+  pose error becomes ~10 cm of position error.
+- **The ceiling sweep needs contrast somewhere.** A smooth slab produces no
+  feature points on its face, and the reading then comes from the corner line with
+  the wall. When not even the corner line has contrast — ceiling and wall the same
+  colour under diffuse light — point-by-point aiming and manual adjustment are
+  what's left.
+- **A ray parallel to the floor never intersects the floor.** Aiming at the
+  horizon or above marks no corner — that's geometry, not something to work
+  around.
