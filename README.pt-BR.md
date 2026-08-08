@@ -160,8 +160,9 @@ precisão do `Float` exatamente onde ela importa.
 
 ### Pé-direito
 
-Três caminhos, nenhum dependente de LiDAR. Convivem porque falham em situações
-diferentes.
+Dois caminhos por AR, nenhum dependente de LiDAR, mais um fallback manual.
+Convivem porque os automáticos falham em situações diferentes — e às vezes os
+dois falham.
 
 **Mira ponto a ponto.** Não há superfície no teto para raycast, então o raio da
 câmera é intersectado com o plano vertical infinito da parede mirada, e a altura
@@ -174,53 +175,14 @@ voltados para baixo, e o ARKit os classifica como `.ceiling` — sem LiDAR, por
 aglomeração de feature points. Quando existe, é o sinal mais confiável, e vira um
 botão de aplicação direta.
 
-**Varredura da nuvem de pontos.** `ARFrame.rawFeaturePoints` entrega pontos 3D
-esparsos, também sem LiDAR. Varrendo o cômodo, a distribuição de alturas descreve
-o teto inteiro — o que um teto inclinado exige, já que nele um número único não
-representa nada.
+**Stepper manual.** Exigido pela especificação, e o único caminho que nunca
+falha. Faixa de 1,80 a 6,00 m em passos de 5 cm — stepper e não teclado, porque
+teclado sobre a câmera cobre a cena no meio da gravação.
 
-O filtro tem três etapas, e a ordem importa:
-
-1. altura dentro da faixa plausível de pé-direito;
-2. dentro do polígono do cômodo — descarta o que está em outro ambiente;
-3. a pelo menos 35 cm das paredes.
-
-O terceiro é o que faz o resultado valer: pontos de parede também são altos e
-estão dentro do cômodo, e passariam pelos dois primeiros. Sem ele, toda parede
-contaminaria a estatística.
-
-O resumo sai em **percentis 10/50/90**, não em mínimo e máximo brutos. A nuvem é
-ruidosa, e um único ponto num lustre ou numa viga solta deslocaria o extremo
-inteiro.
-
-Cada feature point é contado **uma vez**, por identificador — o ARKit mantém o id
-estável entre frames. Sem isso, ficar parado apontando para um canto
-multiplicaria o peso daquele trecho do teto.
-
-**Encontro parede-teto.** Segunda leitura da mesma varredura, para quando a face
-do teto não tem textura: em vez de descartar o que está perto da parede, fica só
-com isso.
-
-Não dá para **simular** textura em software. O ARKit triangula feature points
-fixos no mundo comparando frames de posições diferentes; qualquer coisa
-projetada — a lanterna, por exemplo — acompanha a câmera e não produz ponto de
-referência algum. Um realce especular em movimento chega a piorar o rastreamento.
-Conteúdo AR renderizado também não serve: o rastreador enxerga o feed da câmera,
-não o que desenhamos por cima.
-
-O que existe é a **quina**. Mesmo uma laje perfeitamente lisa tem uma
-descontinuidade de sombreamento onde encontra a parede, e paredes carregam muito
-mais textura que tetos — rodapé, tomada, quadro, móvel encostado.
-
-Os pontos colhidos ali ficam sobre a parede, em alturas variadas; o teto é o
-**topo** dessa distribuição. Daí o percentil 92 em vez da mediana — e em vez do
-máximo bruto, que pegaria um trilho de cortina ou uma viga isolada.
-
-As duas faixas não se sobrepõem: até 25 cm da parede é junção, acima de 35 cm é
-teto.
-
-> Sobra o caso em que **nem a quina** tem contraste — teto e parede da mesma cor,
-> sob luz difusa. Aí só a mira ponto a ponto e o ajuste manual.
+> A varredura do teto sobre `ARFrame.rawFeaturePoints` foi construída e depois
+> removida após teste de campo: a leitura ficava imprevisível demais para se
+> confiar, e a mira ponto a ponto somada ao stepper manual cobrem o caso de
+> forma mais previsível. Segue no histórico, caso valha revisitar.
 
 ### Paredes 3D
 
@@ -323,7 +285,7 @@ ampliados ou impressos.
 RoomScanAR/
 ├── App/          RoomScanARApp
 ├── Models/       RoomScan · Opening · ScanPhase
-├── Geometry/     PolygonMath · WallGeometry · WallMeshBuilder · OrthogonalSnap · CeilingEstimator
+├── Geometry/     PolygonMath · WallGeometry · WallMeshBuilder · OrthogonalSnap
 ├── AR/           ARSessionManager · RaycastService · ARContainerView · RoomSceneRenderer
 ├── Views/        ScannerView · ReticleView · HUDView · FloorPlanView · ResultsView
 └── Support/      Formatting · SIMDExtensions · PDFExporter
@@ -332,7 +294,7 @@ RoomScanAR/
 Decisões que sustentam o resto:
 
 **`Geometry/` é puro.** Entra array de pontos, sai número. `PolygonMath`,
-`WallGeometry`, `OrthogonalSnap` e `CeilingEstimator` importam `simd` e nada mais
+`WallGeometry` e `OrthogonalSnap` importam `simd` e nada mais
 — é o que permite testar a matemática no Simulator, sem dispositivo.
 (`WallMeshBuilder` é a exceção: importa `RealityKit` porque produz
 `MeshResource`.)
@@ -361,7 +323,7 @@ SwiftUI 60×/s. Só a cor da mira precisa reagir; o ponto exato fica fora do
 
 ## Testes
 
-72 testes em 13 suítes, cobrindo a geometria pura. ARKit não é testado — não
+52 testes em 11 suítes, cobrindo a geometria pura. ARKit não é testado — não
 faria sentido.
 
 ```bash
@@ -382,8 +344,6 @@ Casos que valem menção:
 | Snap ortogonal | Convergência para 90° em quadrado e em L tortos, fechamento exato, rejeição de forma irregular |
 | Painéis de parede | Porta, janela, vão até o teto, vão maior que a parede, dois vãos na mesma parede |
 | Rotação da planta | Encaixe em 90°, preservação de ângulo oblíquo, normalização de voltas completas |
-| Estimativa de teto | Descarte de pontos de parede e de mobília, resistência a outlier, teto plano vs. inclinado |
-| Distância até a parede | Projeção presa ao trecho do segmento, não à reta infinita |
 
 ---
 
@@ -399,9 +359,9 @@ IFC ou USDZ, modo escuro, i18n além de pt-BR e acessibilidade VoiceOver.
   inversa.
 - **A precisão degrada com a distância.** Além de 6 m a mira avisa: 1° de erro na
   pose da câmera vira ~10 cm de erro na posição.
-- **A varredura de teto exige contraste em algum lugar.** Laje lisa não produz
-  feature point na face, e aí a leitura vem da quina com a parede. Quando nem a
-  quina tem contraste — teto e parede da mesma cor sob luz difusa —, resta a mira
-  ponto a ponto e o ajuste manual.
+- **O pé-direito depende do usuário.** A mira ponto a ponto precisa de um tiro
+  limpo na quina parede/teto, e o ARKit só detecta plano de teto onde há textura.
+  Nenhum dos dois é garantido, e é por isso que o stepper manual está sempre
+  presente.
 - **Um raio paralelo ao piso não intersecta o piso.** Apontar para o horizonte ou
   para cima não marca canto — é geometria, não é contornável.

@@ -370,8 +370,6 @@ struct HUDView: View {
             .tint(.yellow)
             .disabled(manager.reticleState == .searching)
 
-            ceilingScanSection
-
             if let detected = manager.detectedCeilingHeight {
                 Button {
                     manager.setCeilingHeight(detected)
@@ -431,91 +429,6 @@ struct HUDView: View {
         }
         .padding(14)
         .background(.black.opacity(0.6), in: .rect(cornerRadius: 16))
-    }
-
-    /// Ceiling sweep over ARKit's feature-point cloud.
-    ///
-    /// Complements point-by-point measuring: instead of aiming at corners, the
-    /// user sweeps the room and the height distribution describes the whole
-    /// ceiling. Only works where there is texture — a smooth white ceiling
-    /// produces no feature points.
-    @ViewBuilder
-    private var ceilingScanSection: some View {
-        VStack(spacing: 8) {
-            Button {
-                manager.toggleCeilingScan()
-            } label: {
-                Label(
-                    manager.isScanningCeiling ? "Parar varredura" : "Escanear teto movendo o celular",
-                    systemImage: manager.isScanningCeiling ? "stop.circle.fill" : "dot.viewfinder"
-                )
-                .font(.subheadline.weight(.medium))
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .tint(manager.isScanningCeiling ? .red : .white)
-
-            if manager.isScanningCeiling {
-                HStack(spacing: 8) {
-                    ProgressView().tint(.white).controlSize(.small)
-                    Text(scanProgressText)
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.85))
-                    Spacer()
-                }
-            }
-
-            if let scan = manager.ceilingScan {
-                HStack(spacing: 8) {
-                    ceilingOption("Mais baixo", scan.low)
-                    ceilingOption("Mediana", scan.median)
-                    ceilingOption("Mais alto", scan.high)
-                }
-
-                if scan.spread >= 0.30 {
-                    Text("Teto irregular — variação de \(Format.meters(scan.spread)) entre as pontas.")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-
-            // The path for a textureless ceiling: the smooth face produces no
-            // points, the corner line with the wall does.
-            if let junction = manager.junctionCeilingHeight {
-                Button {
-                    manager.setCeilingHeight(junction)
-                } label: {
-                    VStack(spacing: 1) {
-                        Text("Encontro parede-teto")
-                            .font(.caption2)
-                        Text(Format.meters(junction))
-                            .font(.footnote.weight(.semibold).monospacedDigit())
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .tint(abs(manager.scan.ceilingHeight - junction) < 0.005 ? .yellow : .white)
-
-                if manager.ceilingScan == nil {
-                    Text("A face do teto não tem textura suficiente — esta leitura vem da quina com a parede.")
-                        .font(.caption2)
-                        .foregroundStyle(.white.opacity(0.7))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-        }
-        .padding(10)
-        .background(.white.opacity(0.10), in: .rect(cornerRadius: 12))
-    }
-
-    private var scanProgressText: String {
-        let ceiling = manager.ceilingScan?.sampleCount ?? 0
-        let junction = manager.junctionSampleCount
-        guard ceiling + junction > 0 else {
-            return "Aponte para o teto e varra o cômodo devagar…"
-        }
-        return "\(ceiling) pontos no teto · \(junction) na quina"
     }
 
     /// Choice among the accumulated measurements, for ceilings that aren't flat.

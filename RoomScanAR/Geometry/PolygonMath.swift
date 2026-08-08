@@ -132,39 +132,6 @@ enum PolygonMath {
         return isInside
     }
 
-    /// Distance from the point to the polygon's nearest edge.
-    ///
-    /// Used to discard points hugging the walls while sweeping the ceiling: a
-    /// feature point 5 cm from a wall almost always belongs to it, not to the
-    /// ceiling.
-    static func distanceToBoundary(_ point: SIMD2<Float>, polygon: [SIMD2<Float>]) -> Float {
-        guard polygon.count >= 2 else { return .greatestFiniteMagnitude }
-
-        var best = Float.greatestFiniteMagnitude
-        for index in polygon.indices {
-            let a = polygon[index]
-            let b = polygon[(index + 1) % polygon.count]
-            best = min(best, distanceToSegment(point, a, b))
-        }
-        return best
-    }
-
-    private static func distanceToSegment(
-        _ point: SIMD2<Float>,
-        _ a: SIMD2<Float>,
-        _ b: SIMD2<Float>
-    ) -> Float {
-        let ab = b - a
-        let lengthSquared = simd_length_squared(ab)
-        guard lengthSquared > 1e-10 else { return simd_distance(point, a) }
-
-        // Projection parameter along the line, clamped to the segment's extent —
-        // without the clamp the distance would be to the infinite line, not to
-        // the wall.
-        let t = min(max(simd_dot(point - a, ab) / lengthSquared, 0), 1)
-        return simd_distance(point, a + ab * t)
-    }
-
     // MARK: - Walls
 
     /// Net wall area: perimeter × ceiling height, less the openings.

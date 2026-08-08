@@ -61,17 +61,6 @@ final class ARSessionManager: NSObject, ObservableObject {
     /// Ceiling-height measurements accumulated in this session.
     @Published private(set) var ceilingSamples: [Float] = []
 
-    /// Ceiling sweep over the feature-point cloud.
-    @Published private(set) var isScanningCeiling = false
-    @Published private(set) var ceilingScan: CeilingEstimator.Summary?
-
-    /// Height estimated from the wall-ceiling junction.
-    ///
-    /// A second reading of the same sweep, for when the ceiling face has no
-    /// texture and `ceilingScan` comes back empty.
-    @Published private(set) var junctionCeilingHeight: Float?
-    @Published private(set) var junctionSampleCount = 0
-
     /// Ceiling detected by ARKit as a horizontal plane. The most reliable signal
     /// when it exists, but it depends on the ceiling having enough texture for
     /// ARKit to consolidate a plane.
@@ -154,25 +143,9 @@ final class ARSessionManager: NSObject, ObservableObject {
     /// Slack at the wall's edges when aiming at its vertical plane.
     private static let wallAimTolerance: Float = 0.20
 
-    /// Minimum distance from the walls for a feature point to count as ceiling.
-    private static let ceilingWallMargin: Float = 0.35
-
-    /// Maximum distance from a wall for a point to count as wall-ceiling
-    /// junction. Below `ceilingWallMargin`: the two bands do not overlap.
-    private static let junctionWallDistance: Float = 0.25
-
-    /// The cloud is read every N frames. Reading at 60 Hz does not add new points
-    /// in proportion — feature points persist across frames.
-    private static let ceilingScanFrameInterval = 5
-
     /// Horizontal planes observed so far, keyed by anchor identifier.
     private var planeSamples: [UUID: PlaneSample] = [:]
 
-    /// Feature points already counted in the ceiling sweep.
-    private var seenFeaturePointIDs: Set<UInt64> = []
-    private var ceilingScanHeights: [Float] = []
-    private var junctionHeights: [Float] = []
-    private var framesSinceCeilingScan = 0
     private var latestCameraPosition: SIMD3<Float>?
 
     /// Minimum area for a plane to be considered as the floor.
@@ -222,7 +195,6 @@ final class ARSessionManager: NSObject, ObservableObject {
         draftStart = nil
         draftWidth = nil
         ceilingSamples.removeAll()
-        clearCeilingScan()
         detectedCeilingHeight = nil
         setDraftType(.door)
         reticleState = .searching
@@ -522,94 +494,6 @@ final class ARSessionManager: NSObject, ObservableObject {
         setStatus(nil)
     }
 
-    // MARK: - Ceiling sweep
-
-    func toggleCeilingScan() {
-        if isScanningCeiling {
-            isScanningCeiling = false
-            return
-        }
-        seenFeaturePointIDs.removeAll(keepingCapacity: true)
-        ceilingScanHeights.removeAll(keepingCapacity: true)
-        junctionHeights.removeAll(keepingCapacity: true)
-        ceilingScan = nil
-        junctionCeilingHeight = nil
-        junctionSampleCount = 0
-        framesSinceCeilingScan = 0
-        isScanningCeiling = true
-        setStatus(nil)
-    }
-
-    func clearCeilingScan() {
-        isScanningCeiling = false
-        seenFeaturePointIDs.removeAll()
-        ceilingScanHeights.removeAll()
-        junctionHeights.removeAll()
-        ceilingScan = nil
-        junctionCeilingHeight = nil
-        junctionSampleCount = 0
-    }
-
-    /// Accumulates points from the sparse cloud that may belong to the ceiling.
-    ///
-    /// Deduplication by identifier is what makes the statistic honest: each
-    /// feature point has a stable id across frames, and without it, holding still
-    /// while pointing at one corner would multiply the weight of that patch of
-    /// ceiling.
-    private func ingestCeilingPoints(in arView: ARView) {
-        framesSinceCeilingScan += 1
-        guard framesSinceCeilingScan >= Self.ceilingScanFrameInterval else { return }
-        framesSinceCeilingScan = 0
-
-        guard scan.corners.count >= 3,
-              let cloud = arView.session.currentFrame?.rawFeaturePoints else { return }
-
-        let polygon = scan.corners.map(\.xz)
-        var fresh: [SIMD3<Float>] = []
-        fresh.reserveCapacity(cloud.points.count)
-
-        for (index, identifier) in cloud.identifiers.enumerated() where index < cloud.points.count {
-            guard seenFeaturePointIDs.insert(identifier).inserted else { continue }
-            guard let local = toAnchorSpace(cloud.points[index]) else { continue }
-            fresh.append(local)
-        }
-        guard !fresh.isEmpty else { return }
-
-        ceilingScanHeights.append(
-            contentsOf: CeilingEstimator.ceilingHeights(
-                from: fresh,
-                floorY: scan.floorY,
-                polygon: polygon,
-                minimumHeight: Self.minCeilingHeight,
-                maximumHeight: Self.maxCeilingHeight,
-                wallMargin: Self.ceilingWallMargin
-            )
-        )
-
-        let summary = CeilingEstimator.summarize(ceilingScanHeights)
-        if summary != ceilingScan { ceilingScan = summary }
-
-        // A second reading of the same points, in the band hugging the walls.
-        // This is what rescues a textureless ceiling: the smooth face produces no
-        // points at all, but the corner line where it meets the wall does.
-        junctionHeights.append(
-            contentsOf: CeilingEstimator.junctionHeights(
-                from: fresh,
-                floorY: scan.floorY,
-                polygon: polygon,
-                minimumHeight: Self.minCeilingHeight,
-                maximumHeight: Self.maxCeilingHeight,
-                maxWallDistance: Self.junctionWallDistance
-            )
-        )
-
-        if junctionHeights.count != junctionSampleCount {
-            junctionSampleCount = junctionHeights.count
-        }
-        let estimate = CeilingEstimator.junctionCeilingHeight(junctionHeights)
-        if estimate != junctionCeilingHeight { junctionCeilingHeight = estimate }
-    }
-
     /// Highest horizontal plane detected above the floor, within the plausible range.
     private func recomputeCeilingPlane() {
         guard let worldFloorY else { return }
@@ -628,7 +512,6 @@ final class ARSessionManager: NSObject, ObservableObject {
 
     func confirmCeilingHeight() {
         guard phase == .measuringHeight else { return }
-        isScanningCeiling = false
         // The walls may not have been raised yet; make sure they exist so that
         // tap-to-select has something to highlight.
         if !wallsBuilt { buildWalls() }
@@ -929,7 +812,6 @@ final class ARSessionManager: NSObject, ObservableObject {
             reticleWorldPoint = nil
             currentWallAim = nil
             newState = ceilingAimState(in: arView)
-            if isScanningCeiling { ingestCeilingPoints(in: arView) }
         } else if phase == .markingOpenings, selectedWallIndex != nil {
             // With the wall chosen, the reticle leaves the floor and starts
             // travelling that wall's plane: that is what allows height and width

@@ -164,8 +164,9 @@ precision exactly where it matters.
 
 ### Ceiling height
 
-Three paths, none of them LiDAR-dependent. They coexist because they fail in
-different situations.
+Two AR-based paths, neither LiDAR-dependent, plus a manual fallback. They
+coexist because the automatic ones fail in different situations — and sometimes
+both fail.
 
 **Point-by-point aiming.** There is no ceiling surface to raycast against, so the
 camera ray is intersected with the infinite vertical plane of the aimed wall, and
@@ -178,56 +179,14 @@ downward-facing planes, and ARKit classifies them as `.ceiling` — no LiDAR, ju
 feature-point clustering. When it exists it is the most reliable signal, and
 becomes a one-tap button.
 
-**Point-cloud sweep.** `ARFrame.rawFeaturePoints` yields sparse 3D points, also
-without LiDAR. Sweeping the room, the height distribution describes the whole
-ceiling — which is what a sloped ceiling demands, since a single number
-represents nothing there.
+**Manual stepper.** Required by the specification, and the only path that never
+fails. Range 1.80–6.00 m in 5 cm steps — a stepper rather than a keyboard,
+because a keyboard over the camera covers the scene mid-recording.
 
-The filter has three stages, and the order matters:
-
-1. height within the plausible ceiling range;
-2. inside the room polygon — discards what belongs to another space;
-3. at least 35 cm away from the walls.
-
-The third is what makes the result worth anything: wall points are also high and
-also inside the room, and would pass the first two. Without it every wall would
-contaminate the statistic.
-
-The summary is reported as **10th/50th/90th percentiles**, not raw min and max.
-The cloud is noisy, and one stray point on a light fixture or a loose beam would
-drag the whole extreme with it.
-
-Each feature point is counted **once**, by identifier — ARKit keeps the id stable
-across frames. Without that, holding still while pointing at one corner would
-multiply the weight of that patch of ceiling.
-
-**Wall-ceiling junction.** A second reading of the same sweep, for when the
-ceiling face has no texture: instead of discarding what sits near the wall, it
-keeps only that.
-
-Texture cannot be **simulated** in software. ARKit triangulates world-fixed
-feature points by comparing frames taken from different positions; anything
-projected — the torch, for instance — travels with the camera and yields no
-landmark at all. A moving specular highlight actively degrades tracking.
-Rendered AR content doesn't help either: the tracker sees the camera feed, not
-what we draw on top of it.
-
-What does exist is the **corner line**. Even a perfectly flat ceiling has a
-shading discontinuity where it meets the wall, and walls carry far more texture
-than ceilings — baseboards, outlets, picture frames, furniture pushed against
-them.
-
-The points collected there sit on the wall at varying heights; the ceiling is the
-**top** of that distribution. Hence the 92nd percentile rather than the median —
-and rather than the raw maximum, which would latch onto a curtain rail or an
-isolated beam.
-
-The two bands do not overlap: within 25 cm of the wall is junction, beyond 35 cm
-is ceiling.
-
-> What remains is the case where **not even the corner line** has contrast —
-> ceiling and wall the same colour under diffuse light. There, only
-> point-by-point aiming and the manual adjustment.
+> The ceiling sweep over `ARFrame.rawFeaturePoints` was built and then removed
+> after field testing: the reading was too unpredictable to trust, and the
+> point-by-point aiming plus the manual stepper cover the case more
+> dependably. It lives in the history if it is ever worth revisiting.
 
 ### 3D walls
 
@@ -330,7 +289,7 @@ zoomed or printed.
 RoomScanAR/
 ├── App/          RoomScanARApp
 ├── Models/       RoomScan · Opening · ScanPhase
-├── Geometry/     PolygonMath · WallGeometry · WallMeshBuilder · OrthogonalSnap · CeilingEstimator
+├── Geometry/     PolygonMath · WallGeometry · WallMeshBuilder · OrthogonalSnap
 ├── AR/           ARSessionManager · RaycastService · ARContainerView · RoomSceneRenderer
 ├── Views/        ScannerView · ReticleView · HUDView · FloorPlanView · ResultsView
 └── Support/      Formatting · SIMDExtensions · PDFExporter
@@ -338,8 +297,8 @@ RoomScanAR/
 
 The decisions everything else rests on:
 
-**`Geometry/` is pure.** Points in, numbers out. `PolygonMath`, `WallGeometry`,
-`OrthogonalSnap` and `CeilingEstimator` import `simd` and nothing else — that is
+**`Geometry/` is pure.** Points in, numbers out. `PolygonMath`, `WallGeometry`
+and `OrthogonalSnap` import `simd` and nothing else — that is
 what makes the math testable in the Simulator, with no device. (`WallMeshBuilder`
 is the exception: it imports `RealityKit` because it produces `MeshResource`.)
 
@@ -368,7 +327,7 @@ stays out of `@Published`.
 
 ## Tests
 
-72 tests across 13 suites, covering the pure geometry. ARKit is not tested — it
+52 tests across 11 suites, covering the pure geometry. ARKit is not tested — it
 wouldn't make sense.
 
 ```bash
@@ -390,8 +349,6 @@ Cases worth calling out:
 | Orthogonal snap | Convergence to 90° on skewed squares and L shapes, exact closure, rejection of irregular shapes |
 | Wall panels | Door, window, opening up to the ceiling, opening wider than the wall, two openings on one wall |
 | Plan rotation | 90° snapping, preservation of deliberate oblique angles, normalisation of full turns |
-| Ceiling estimation | Rejection of wall and furniture points, outlier resistance, flat vs. sloped ceiling |
-| Distance to boundary | Projection clamped to the segment, not to the infinite line |
 
 ---
 
@@ -406,11 +363,10 @@ dark mode, localization beyond pt-BR, and VoiceOver accessibility.
 - **Openings can't be edited once created.** Only `Undo`, in reverse order.
 - **Precision degrades with distance.** Past 6 m the reticle warns: 1° of camera
   pose error becomes ~10 cm of position error.
-- **The ceiling sweep needs contrast somewhere.** A smooth slab produces no
-  feature points on its face, and the reading then comes from the corner line with
-  the wall. When not even the corner line has contrast — ceiling and wall the same
-  colour under diffuse light — point-by-point aiming and manual adjustment are
-  what's left.
+- **Ceiling height leans on the user.** Point-by-point aiming needs a clean shot
+  at the wall-ceiling junction, and ARKit only detects a ceiling plane where the
+  ceiling has texture. Neither is guaranteed, which is why the manual stepper is
+  always present.
 - **A ray parallel to the floor never intersects the floor.** Aiming at the
   horizon or above marks no corner — that's geometry, not something to work
   around.
