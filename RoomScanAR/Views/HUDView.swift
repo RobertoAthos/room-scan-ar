@@ -475,16 +475,43 @@ struct HUDView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+
+            // Caminho para teto sem textura: a face lisa não gera ponto, a quina
+            // com a parede gera.
+            if let junction = manager.junctionCeilingHeight {
+                Button {
+                    manager.setCeilingHeight(junction)
+                } label: {
+                    VStack(spacing: 1) {
+                        Text("Encontro parede-teto")
+                            .font(.caption2)
+                        Text(Format.meters(junction))
+                            .font(.footnote.weight(.semibold).monospacedDigit())
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(abs(manager.scan.ceilingHeight - junction) < 0.005 ? .yellow : .white)
+
+                if manager.ceilingScan == nil {
+                    Text("A face do teto não tem textura suficiente — esta leitura vem da quina com a parede.")
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.7))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
         }
         .padding(10)
         .background(.white.opacity(0.10), in: .rect(cornerRadius: 12))
     }
 
     private var scanProgressText: String {
-        guard let scan = manager.ceilingScan else {
+        let ceiling = manager.ceilingScan?.sampleCount ?? 0
+        let junction = manager.junctionSampleCount
+        guard ceiling + junction > 0 else {
             return "Aponte para o teto e varra o cômodo devagar…"
         }
-        return "\(scan.sampleCount) pontos de teto"
+        return "\(ceiling) pontos no teto · \(junction) na quina"
     }
 
     /// Escolha entre as medições acumuladas, para tetos que não são planos.

@@ -195,9 +195,30 @@ Cada feature point é contado **uma vez**, por identificador — o ARKit mantém
 estável entre frames. Sem isso, ficar parado apontando para um canto
 multiplicaria o peso daquele trecho do teto.
 
-> **Os dois últimos dependem de textura.** Teto branco liso e fosco não gera
-> feature point, e ali nenhum deles funciona. A mira ponto a ponto e o ajuste
-> manual continuam sendo o caminho nesse caso.
+**Encontro parede-teto.** Segunda leitura da mesma varredura, para quando a face
+do teto não tem textura: em vez de descartar o que está perto da parede, fica só
+com isso.
+
+Não dá para **simular** textura em software. O ARKit triangula feature points
+fixos no mundo comparando frames de posições diferentes; qualquer coisa
+projetada — a lanterna, por exemplo — acompanha a câmera e não produz ponto de
+referência algum. Um realce especular em movimento chega a piorar o rastreamento.
+Conteúdo AR renderizado também não serve: o rastreador enxerga o feed da câmera,
+não o que desenhamos por cima.
+
+O que existe é a **quina**. Mesmo uma laje perfeitamente lisa tem uma
+descontinuidade de sombreamento onde encontra a parede, e paredes carregam muito
+mais textura que tetos — rodapé, tomada, quadro, móvel encostado.
+
+Os pontos colhidos ali ficam sobre a parede, em alturas variadas; o teto é o
+**topo** dessa distribuição. Daí o percentil 92 em vez da mediana — e em vez do
+máximo bruto, que pegaria um trilho de cortina ou uma viga isolada.
+
+As duas faixas não se sobrepõem: até 25 cm da parede é junção, acima de 35 cm é
+teto.
+
+> Sobra o caso em que **nem a quina** tem contraste — teto e parede da mesma cor,
+> sob luz difusa. Aí só a mira ponto a ponto e o ajuste manual.
 
 ### Paredes 3D
 
@@ -338,7 +359,7 @@ SwiftUI 60×/s. Só a cor da mira precisa reagir; o ponto exato fica fora do
 
 ## Testes
 
-66 testes em 13 suítes, cobrindo a geometria pura. ARKit não é testado — não
+72 testes em 13 suítes, cobrindo a geometria pura. ARKit não é testado — não
 faria sentido.
 
 ```bash
@@ -376,8 +397,9 @@ IFC ou USDZ, modo escuro, i18n além de pt-BR e acessibilidade VoiceOver.
   inversa.
 - **A precisão degrada com a distância.** Além de 6 m a mira avisa: 1° de erro na
   pose da câmera vira ~10 cm de erro na posição.
-- **A varredura de teto exige textura.** Laje branca lisa e fosca não produz
-  feature point, e nem a detecção de plano nem a nuvem funcionam ali. Resta a
-  mira ponto a ponto e o ajuste manual.
+- **A varredura de teto exige contraste em algum lugar.** Laje lisa não produz
+  feature point na face, e aí a leitura vem da quina com a parede. Quando nem a
+  quina tem contraste — teto e parede da mesma cor sob luz difusa —, resta a mira
+  ponto a ponto e o ajuste manual.
 - **Um raio paralelo ao piso não intersecta o piso.** Apontar para o horizonte ou
   para cima não marca canto — é geometria, não é contornável.

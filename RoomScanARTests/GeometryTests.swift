@@ -655,6 +655,63 @@ struct CeilingEstimatorTests {
         expectClose(summary.high, 2.60, "o percentil 90 não deveria enxergar o outlier")
     }
 
+    private func junction(_ points: [SIMD3<Float>]) -> [Float] {
+        CeilingEstimator.junctionHeights(
+            from: points,
+            floorY: 0,
+            polygon: room,
+            minimumHeight: 1.8,
+            maximumHeight: 6.0,
+            maxWallDistance: 0.25
+        )
+    }
+
+    @Test("A junção fica com o que a varredura do teto descarta")
+    func junctionKeepsWallPoints() {
+        // Mesmo ponto a 10 cm da parede: rejeitado como teto, aceito como junção.
+        let nearWall = point(2, 2.7, 0.10)
+        #expect(heights([nearWall]).isEmpty)
+        #expect(junction([nearWall]).count == 1)
+    }
+
+    @Test("A junção ignora o miolo do cômodo")
+    func junctionIgnoresInterior() {
+        // As duas faixas não se sobrepõem: 1,5 m da parede é teto, não junção.
+        #expect(junction([point(2, 2.7, 1.5)]).isEmpty)
+    }
+
+    @Test("Pontos logo fora do polígono contam como junção")
+    func junctionAcceptsSlightlyOutside() {
+        // A parede tem espessura, e o traçado dos cantos passa pela face
+        // interna dela — pontos um pouco além ainda são da quina.
+        #expect(junction([point(2, 2.7, -0.08)]).count == 1)
+    }
+
+    @Test("Altura pela junção é o topo da distribuição, não a mediana")
+    func junctionUsesUpperPercentile() {
+        // Pontos espalhados pela parede de 1,8 a 2,6 m: o teto é o topo.
+        let sorted = (0..<100).map { 1.8 + Float($0) * (0.8 / 99) }
+        guard let estimate = CeilingEstimator.junctionCeilingHeight(sorted) else {
+            Issue.record("deveria ter estimado")
+            return
+        }
+        #expect(estimate > 2.5, "estimou \(estimate) m, esperado perto de 2,6")
+    }
+
+    @Test("Um ponto solto acima do teto não vira o resultado")
+    func junctionResistsOutlier() {
+        // Percentil 92 e não o máximo: um trilho de cortina ou uma viga isolada
+        // levaria o topo bruto junto.
+        var samples = (0..<99).map { _ in Float(2.60) }
+        samples.append(5.80)
+        expectClose(CeilingEstimator.junctionCeilingHeight(samples) ?? 0, 2.60)
+    }
+
+    @Test("Poucas amostras não estimam nada")
+    func junctionNeedsSamples() {
+        #expect(CeilingEstimator.junctionCeilingHeight([2.5, 2.6]) == nil)
+    }
+
     @Test("Percentis interpolam entre as amostras vizinhas")
     func percentiles() {
         let sorted: [Float] = [1, 2, 3, 4, 5]

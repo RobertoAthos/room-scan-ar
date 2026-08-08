@@ -65,6 +65,13 @@ final class ARSessionManager: NSObject, ObservableObject {
     @Published private(set) var isScanningCeiling = false
     @Published private(set) var ceilingScan: CeilingEstimator.Summary?
 
+    /// Altura estimada pelo encontro parede-teto.
+    ///
+    /// Segunda leitura da mesma varredura, para o caso em que a face do teto não
+    /// tem textura e `ceilingScan` volta vazio.
+    @Published private(set) var junctionCeilingHeight: Float?
+    @Published private(set) var junctionSampleCount = 0
+
     /// Teto detectado como plano horizontal pelo ARKit. É o sinal mais
     /// confiável quando existe, mas depende de o teto ter textura suficiente
     /// para o ARKit consolidar um plano.
@@ -149,6 +156,10 @@ final class ARSessionManager: NSObject, ObservableObject {
     /// Distância mínima das paredes para um feature point contar como teto.
     private static let ceilingWallMargin: Float = 0.35
 
+    /// Distância máxima da parede para um ponto contar como junção parede-teto.
+    /// Fica abaixo de `ceilingWallMargin`: as duas faixas não se sobrepõem.
+    private static let junctionWallDistance: Float = 0.25
+
     /// A nuvem é lida a cada N frames. Ler a 60 Hz não acrescenta pontos novos
     /// na mesma proporção — os feature points persistem entre frames.
     private static let ceilingScanFrameInterval = 5
@@ -159,6 +170,7 @@ final class ARSessionManager: NSObject, ObservableObject {
     /// Feature points já contabilizados na varredura do teto.
     private var seenFeaturePointIDs: Set<UInt64> = []
     private var ceilingScanHeights: [Float] = []
+    private var junctionHeights: [Float] = []
     private var framesSinceCeilingScan = 0
     private var latestCameraPosition: SIMD3<Float>?
 
@@ -514,7 +526,10 @@ final class ARSessionManager: NSObject, ObservableObject {
         }
         seenFeaturePointIDs.removeAll(keepingCapacity: true)
         ceilingScanHeights.removeAll(keepingCapacity: true)
+        junctionHeights.removeAll(keepingCapacity: true)
         ceilingScan = nil
+        junctionCeilingHeight = nil
+        junctionSampleCount = 0
         framesSinceCeilingScan = 0
         isScanningCeiling = true
         setStatus(nil)
@@ -524,7 +539,10 @@ final class ARSessionManager: NSObject, ObservableObject {
         isScanningCeiling = false
         seenFeaturePointIDs.removeAll()
         ceilingScanHeights.removeAll()
+        junctionHeights.removeAll()
         ceilingScan = nil
+        junctionCeilingHeight = nil
+        junctionSampleCount = 0
     }
 
     /// Acumula pontos da nuvem esparsa que possam pertencer ao teto.
@@ -564,6 +582,26 @@ final class ARSessionManager: NSObject, ObservableObject {
 
         let summary = CeilingEstimator.summarize(ceilingScanHeights)
         if summary != ceilingScan { ceilingScan = summary }
+
+        // Segunda leitura dos mesmos pontos, na faixa colada às paredes. É o que
+        // salva o teto sem textura: a face lisa não gera ponto algum, mas a
+        // quina onde ela encontra a parede gera.
+        junctionHeights.append(
+            contentsOf: CeilingEstimator.junctionHeights(
+                from: fresh,
+                floorY: scan.floorY,
+                polygon: polygon,
+                minimumHeight: Self.minCeilingHeight,
+                maximumHeight: Self.maxCeilingHeight,
+                maxWallDistance: Self.junctionWallDistance
+            )
+        )
+
+        if junctionHeights.count != junctionSampleCount {
+            junctionSampleCount = junctionHeights.count
+        }
+        let estimate = CeilingEstimator.junctionCeilingHeight(junctionHeights)
+        if estimate != junctionCeilingHeight { junctionCeilingHeight = estimate }
     }
 
     /// Maior plano horizontal detectado acima do piso, dentro da faixa plausível.

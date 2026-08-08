@@ -51,6 +51,55 @@ enum CeilingEstimator {
         }
     }
 
+    /// Alturas dos pontos que estão sobre o **encontro parede-teto**.
+    ///
+    /// É o inverso de `ceilingHeights`: em vez de descartar o que está perto da
+    /// parede, fica só com isso.
+    ///
+    /// Serve para o caso em que a face do teto não tem textura — laje branca
+    /// lisa não gera feature point nenhum, e a varredura do interior volta
+    /// vazia. A quina onde parede e teto se encontram, porém, é uma
+    /// descontinuidade de sombreamento entre duas superfícies, e existe mesmo no
+    /// teto mais liso. Paredes também carregam muito mais textura que tetos:
+    /// rodapé, tomada, quadro, móvel encostado.
+    ///
+    /// Os pontos colhidos ficam sobre a parede, em alturas variadas. O teto é o
+    /// **topo** dessa distribuição — daí `junctionCeilingHeight` usar um
+    /// percentil alto em vez da mediana.
+    static func junctionHeights(
+        from points: [SIMD3<Float>],
+        floorY: Float,
+        polygon: [SIMD2<Float>],
+        minimumHeight: Float,
+        maximumHeight: Float,
+        maxWallDistance: Float
+    ) -> [Float] {
+        guard polygon.count >= 3 else { return [] }
+
+        return points.compactMap { point in
+            let height = point.y - floorY
+            guard height >= minimumHeight, height <= maximumHeight else { return nil }
+
+            // Sem teste de contenção: a quina fica sobre a linha do polígono, e
+            // pontos ligeiramente para fora dela são igualmente válidos — o
+            // traçado dos cantos passa pela face interna da parede, que tem
+            // espessura. Só a distância até a aresta importa.
+            let planar = point.xz
+            guard PolygonMath.distanceToBoundary(planar, polygon: polygon) <= maxWallDistance else { return nil }
+
+            return height
+        }
+    }
+
+    /// Altura do teto a partir das amostras da junção.
+    ///
+    /// Percentil 92, e não o máximo: o topo bruto pegaria um ponto isolado numa
+    /// viga, num trilho de cortina ou já do outro lado da parede.
+    static func junctionCeilingHeight(_ heights: [Float], minimumSamples: Int = 12) -> Float? {
+        guard heights.count >= minimumSamples else { return nil }
+        return percentile(heights.sorted(), 0.92)
+    }
+
     /// Resumo por percentis.
     ///
     /// Percentis, e não mínimo e máximo brutos: a nuvem é ruidosa, e um único
