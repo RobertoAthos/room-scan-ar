@@ -8,20 +8,20 @@ struct ResultsView: View {
     @State private var pdfURL: URL?
     @State private var exportFailed = false
 
+    /// Rotação confirmada da planta.
+    @State private var planRotation: Angle = .zero
+    /// Rotação em curso durante o gesto, ainda não confirmada.
+    @State private var liveRotation: Angle = .zero
+
+    private var effectiveRotation: Angle { planRotation + liveRotation }
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 20) {
                     measurementsGrid
 
-                    FloorPlanView(scan: scan)
-                        .frame(height: 420)
-                        .background(.white)
-                        .clipShape(.rect(cornerRadius: 12))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 12)
-                                .stroke(.black.opacity(0.15), lineWidth: 1)
-                        }
+                    planSection
 
                     if !scan.openings.isEmpty {
                         openingsList
@@ -41,6 +41,82 @@ struct ResultsView: View {
             }
         }
         .preferredColorScheme(.light)
+    }
+
+    // MARK: - Planta
+
+    private var planSection: some View {
+        VStack(spacing: 10) {
+            FloorPlanView(scan: scan, rotation: effectiveRotation)
+                .frame(height: 420)
+                .background(.white)
+                .clipShape(.rect(cornerRadius: 12))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(.black.opacity(0.15), lineWidth: 1)
+                }
+                .gesture(rotationGesture)
+
+            rotationControls
+        }
+        // O PDF sai na orientação exibida, então um arquivo já gerado fica
+        // obsoleto assim que a planta gira.
+        .onChange(of: planRotation) { _, _ in pdfURL = nil }
+    }
+
+    /// Gesto de dois dedos. Os botões de 90° existem em paralelo porque, durante
+    /// uma gravação, botão é mais confiável do que acertar um gesto.
+    private var rotationGesture: some Gesture {
+        RotateGesture()
+            .onChanged { value in
+                liveRotation = value.rotation
+            }
+            .onEnded { value in
+                planRotation = PlanTransform.snapRotation(planRotation + value.rotation)
+                liveRotation = .zero
+            }
+    }
+
+    private var rotationControls: some View {
+        HStack(spacing: 10) {
+            Button {
+                rotate(by: -90)
+            } label: {
+                Label("Girar à esquerda", systemImage: "rotate.left")
+                    .labelStyle(.iconOnly)
+                    .font(.title3)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+
+            Button {
+                rotate(by: 90)
+            } label: {
+                Label("Girar à direita", systemImage: "rotate.right")
+                    .labelStyle(.iconOnly)
+                    .font(.title3)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+
+            if planRotation != .zero {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.25)) { planRotation = .zero }
+                } label: {
+                    Text("Reorientar")
+                        .font(.subheadline)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .controlSize(.large)
+    }
+
+    private func rotate(by degrees: Double) {
+        withAnimation(.easeInOut(duration: 0.25)) {
+            planRotation = PlanTransform.snapRotation(planRotation + .degrees(degrees))
+        }
     }
 
     // MARK: - Medidas
@@ -136,7 +212,7 @@ struct ResultsView: View {
                 .controlSize(.large)
             } else {
                 Button {
-                    pdfURL = PDFExporter.export(scan: scan)
+                    pdfURL = PDFExporter.export(scan: scan, rotation: planRotation)
                     exportFailed = pdfURL == nil
                 } label: {
                     Label("Exportar PDF", systemImage: "doc.badge.arrow.up")

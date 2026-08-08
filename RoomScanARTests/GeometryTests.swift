@@ -1,4 +1,5 @@
 import Testing
+import SwiftUI
 import simd
 @testable import RoomScanAR
 
@@ -524,6 +525,51 @@ struct WallGeometryTests {
             wallEnd: SIMD3<Float>(4, 0, 0)
         )
         #expect(hit == nil)
+    }
+}
+
+@Suite("Rotação da planta")
+struct PlanRotationTests {
+
+    private func degrees(_ value: Double) -> Angle { .degrees(value) }
+
+    @Test("Ângulo quase reto encosta no múltiplo de 90°")
+    func snapsWhenClose() {
+        #expect(PlanTransform.snapRotation(degrees(87)).degrees == 90)
+        #expect(PlanTransform.snapRotation(degrees(93)).degrees == 90)
+        #expect(PlanTransform.snapRotation(degrees(-4)).degrees == 0)
+        #expect(PlanTransform.snapRotation(degrees(184)).degrees == 180)
+    }
+
+    @Test("Ângulo oblíquo intencional é preservado")
+    func keepsDeliberateAngle() {
+        // A tolerância precisa ser estreita o bastante para não sequestrar uma
+        // orientação escolhida de propósito.
+        #expect(PlanTransform.snapRotation(degrees(45)).degrees == 45)
+        #expect(PlanTransform.snapRotation(degrees(80)).degrees == 80)
+    }
+
+    @Test("Voltas completas são normalizadas")
+    func normalizesFullTurns() {
+        // Girar quatro vezes 90° pelo botão acumularia 360° sem isto.
+        #expect(PlanTransform.snapRotation(degrees(360)).degrees == 0)
+        #expect(PlanTransform.snapRotation(degrees(450)).degrees == 90)
+        #expect(PlanTransform.snapRotation(degrees(-270)).degrees == 90)
+    }
+
+    @Test("180 e −180 convergem para a forma positiva")
+    func canonicalHalfTurn() {
+        #expect(PlanTransform.snapRotation(degrees(-180)).degrees == 180)
+        #expect(PlanTransform.snapRotation(degrees(180)).degrees == 180)
+    }
+
+    @Test("Quatro giros de 90° voltam ao ponto de partida")
+    func fourQuarterTurns() {
+        var angle = Angle.zero
+        for _ in 0..<4 {
+            angle = PlanTransform.snapRotation(angle + .degrees(90))
+        }
+        #expect(angle.degrees == 0)
     }
 }
 

@@ -8,6 +8,14 @@ import simd
 struct FloorPlanView: View {
     let scan: RoomScan
 
+    /// Rotação adicional aplicada sobre a orientação automática.
+    ///
+    /// A planta já se alinha sozinha pela parede mais longa; isto é o ajuste do
+    /// usuário por cima disso. Vale tanto para a tela quanto para o PDF — girar
+    /// só a visualização seria inútil, já que o motivo de girar é exportar na
+    /// orientação certa.
+    var rotation: Angle = .zero
+
     /// Espessura da parede no desenho, em pontos.
     private let wallWidth: CGFloat = 8
     /// Margem ao redor do desenho, para as cotas caberem.
@@ -19,7 +27,8 @@ struct FloorPlanView: View {
                   let transform = PlanTransform(
                       scan: scan,
                       viewport: size,
-                      margin: margin
+                      margin: margin,
+                      extraRotation: rotation
                   ) else { return }
 
             drawWalls(in: &context, transform: transform)
@@ -338,7 +347,7 @@ struct PlanTransform {
     private let origin: SIMD2<Float>
     private let polygon: [SIMD2<Float>]
 
-    init?(scan: RoomScan, viewport: CGSize, margin: CGFloat) {
+    init?(scan: RoomScan, viewport: CGSize, margin: CGFloat, extraRotation: Angle = .zero) {
         let raw = scan.corners.map(\.xz)
         guard raw.count >= 2 else { return nil }
 
@@ -349,7 +358,11 @@ struct PlanTransform {
         //
         // Calculado numa constante local: ler a propriedade dentro do closure do
         // `map` capturaria `self` antes de estar inicializado.
-        let angle = -Self.dominantAngle(of: raw, closed: scan.isClosed)
+        //
+        // O ajuste manual entra somado aqui, e não como transformação na hora de
+        // desenhar: assim a caixa envolvente é recalculada já girada, e a planta
+        // continua ocupando a página inteira em qualquer orientação.
+        let angle = -Self.dominantAngle(of: raw, closed: scan.isClosed) + Float(extraRotation.radians)
         rotation = angle
 
         let rotated = raw.map { Self.rotate($0, by: angle) }
@@ -371,6 +384,24 @@ struct PlanTransform {
             x: (viewport.width - CGFloat(span.x) * scale) / 2,
             y: (viewport.height - CGFloat(span.y) * scale) / 2
         )
+    }
+
+    /// Normaliza para (−180°, 180°] e encosta nos múltiplos de 90° quando já
+    /// está quase lá.
+    ///
+    /// Planta técnica quase sempre quer orientação ortogonal, e acertar 90°
+    /// exatos com dois dedos é impossível. A tolerância é estreita o bastante
+    /// para não impedir um ângulo intencionalmente oblíquo.
+    static func snapRotation(_ angle: Angle, tolerance: Double = 7) -> Angle {
+        var degrees = angle.degrees.truncatingRemainder(dividingBy: 360)
+        if degrees > 180 { degrees -= 360 }
+        if degrees <= -180 { degrees += 360 }
+
+        let nearestRightAngle = (degrees / 90).rounded() * 90
+        guard abs(degrees - nearestRightAngle) <= tolerance else { return .degrees(degrees) }
+
+        // 180 e −180 são o mesmo ângulo; escolhe a forma positiva.
+        return .degrees(nearestRightAngle == -180 ? 180 : nearestRightAngle)
     }
 
     /// Ângulo da parede mais longa. É a referência que fica horizontal.

@@ -12,8 +12,15 @@ enum PDFExporter {
     /// O `ImageRenderer` desenha direto num `CGContext` de PDF, em vez de gerar um
     /// bitmap e embrulhá-lo: linhas e texto saem como vetor, que é o que faz uma
     /// planta continuar legível ampliada ou impressa.
+    /// - Parameter rotation: orientação escolhida na tela. O PDF sai como a
+    ///   planta está sendo exibida — girar só a visualização não teria sentido,
+    ///   já que o motivo de girar é exportar na orientação certa.
     @MainActor
-    static func export(scan: RoomScan, fileName: String = "planta-baixa") -> URL? {
+    static func export(
+        scan: RoomScan,
+        rotation: Angle = .zero,
+        fileName: String = "planta-baixa"
+    ) -> URL? {
         let url = FileManager.default
             .temporaryDirectory
             .appendingPathComponent("\(fileName).pdf")
@@ -22,7 +29,7 @@ enum PDFExporter {
         guard let consumer = CGDataConsumer(url: url as CFURL),
               let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else { return nil }
 
-        let page = FloorPlanPage(scan: scan)
+        let page = FloorPlanPage(scan: scan, rotation: rotation)
             .frame(width: pageSize.width, height: pageSize.height)
 
         let renderer = ImageRenderer(content: page)
@@ -44,6 +51,7 @@ enum PDFExporter {
 /// Página da planta: cabeçalho com as medidas e o desenho abaixo.
 private struct FloorPlanPage: View {
     let scan: RoomScan
+    let rotation: Angle
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -60,7 +68,7 @@ private struct FloorPlanPage: View {
             .padding(.top, 40)
             .padding(.bottom, 12)
 
-            FloorPlanView(scan: scan)
+            FloorPlanView(scan: scan, rotation: rotation)
 
             Text("RoomScan AR")
                 .font(.system(size: 10))
