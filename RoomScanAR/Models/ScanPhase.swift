@@ -1,10 +1,10 @@
 import Foundation
 
-/// Máquina de estados do fluxo de digitalização.
+/// State machine for the scanning flow.
 ///
-/// As transições são sempre explícitas (acionadas por botão) — nunca automáticas.
-/// Isso é deliberado: um avanço de fase inesperado no meio de uma gravação de vídeo
-/// arruína a demonstração.
+/// Transitions are always explicit (button-driven) — never automatic. That is
+/// deliberate: an unexpected phase change in the middle of a video recording
+/// ruins the demo.
 enum ScanPhase: Int, CaseIterable, Sendable {
     case detectingFloor
     case markingCorners
@@ -14,7 +14,8 @@ enum ScanPhase: Int, CaseIterable, Sendable {
 }
 
 extension ScanPhase {
-    /// Instrução curta exibida no topo do HUD.
+    /// Short instruction shown at the top of the HUD.
+    /// User-facing copy stays in Brazilian Portuguese, as the spec requires.
     var instruction: String {
         switch self {
         case .detectingFloor:  "Aponte para o chão e mova o celular devagar"

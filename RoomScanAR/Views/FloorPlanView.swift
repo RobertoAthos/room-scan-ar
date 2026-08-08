@@ -1,24 +1,25 @@
 import SwiftUI
 import simd
 
-/// Planta baixa desenhada com `Canvas`.
+/// Floor plan drawn with `Canvas`.
 ///
-/// Estética de desenho técnico: fundo branco, traço preto, sem sombra nem cor
-/// decorativa. É o que vai para o PDF, então precisa ler bem impresso.
+/// Technical-drawing style: white background, black stroke, no shadow and no
+/// decorative colour. This is what goes into the PDF, so it has to read well in
+/// print. User-facing copy stays in Brazilian Portuguese, as the spec requires.
 struct FloorPlanView: View {
     let scan: RoomScan
 
-    /// Rotação adicional aplicada sobre a orientação automática.
+    /// Extra rotation applied on top of the automatic orientation.
     ///
-    /// A planta já se alinha sozinha pela parede mais longa; isto é o ajuste do
-    /// usuário por cima disso. Vale tanto para a tela quanto para o PDF — girar
-    /// só a visualização seria inútil, já que o motivo de girar é exportar na
-    /// orientação certa.
+    /// The plan already aligns itself by the longest wall; this is the user's
+    /// adjustment over that. It applies to both the screen and the PDF —
+    /// rotating the view alone would be useless, since the reason to rotate is
+    /// to export at the right orientation.
     var rotation: Angle = .zero
 
-    /// Espessura da parede no desenho, em pontos.
+    /// Wall thickness in the drawing, in points.
     private let wallWidth: CGFloat = 8
-    /// Margem ao redor do desenho, para as cotas caberem.
+    /// Margin around the drawing, so the dimension labels fit.
     private let margin: CGFloat = 56
 
     var body: some View {
@@ -39,7 +40,7 @@ struct FloorPlanView: View {
         .background(.white)
     }
 
-    // MARK: - Paredes
+    // MARK: - Walls
 
     private func drawWalls(in context: inout GraphicsContext, transform: PlanTransform) {
         var path = Path()
@@ -54,7 +55,7 @@ struct FloorPlanView: View {
         )
     }
 
-    // MARK: - Portas, janelas e vãos
+    // MARK: - Doors, windows and openings
 
     private func drawOpenings(in context: inout GraphicsContext, transform: PlanTransform) {
         for opening in scan.openings {
@@ -69,8 +70,8 @@ struct FloorPlanView: View {
             let a = transform.point(wall.start + direction * start)
             let b = transform.point(wall.start + direction * end)
 
-            // Abre o vão apagando o trecho da parede com a cor do fundo, em vez
-            // de desenhar a parede em pedaços. Mais simples e o resultado é o mesmo.
+            // Open the gap by erasing that stretch of wall with the background
+            // colour, rather than drawing the wall in pieces. Simpler, same result.
             var gap = Path()
             gap.move(to: a)
             gap.addLine(to: b)
@@ -94,7 +95,7 @@ struct FloorPlanView: View {
                     inwardNormal: transform.inwardNormal(ofWall: opening.wallIndex, in: scan)
                 )
             case .openGap:
-                // Um vão aberto é só a ausência de parede: as ombreiras bastam.
+                // An open passage is just the absence of wall: the jambs suffice.
                 break
             case .window:
                 drawWindow(in: &context, from: a, to: b)
@@ -102,7 +103,7 @@ struct FloorPlanView: View {
         }
     }
 
-    /// Ombreiras: os traços que fecham as laterais do vão.
+    /// Jambs: the strokes closing the opening's sides.
     private func drawJambs(in context: inout GraphicsContext, at a: CGPoint, and b: CGPoint, along delta: CGPoint) {
         let length = hypot(delta.x, delta.y)
         guard length > 0.5 else { return }
@@ -117,7 +118,7 @@ struct FloorPlanView: View {
         context.stroke(path, with: .color(.black), style: StrokeStyle(lineWidth: 1.5))
     }
 
-    /// Porta de giro: folha aberta a 90° e arco de varredura.
+    /// Swing door: leaf open at 90° plus the sweep arc.
     private func drawSwingDoor(
         in context: inout GraphicsContext,
         from a: CGPoint,
@@ -153,13 +154,13 @@ struct FloorPlanView: View {
         )
     }
 
-    /// Porta de correr: a folha desenhada como painel fino paralelo à parede,
-    /// deslocado para o lado por onde ela corre.
+    /// Sliding door: the leaf drawn as a thin panel parallel to the wall,
+    /// offset to the side it slides along.
     ///
-    /// **Sem seta.** A convenção arquitetônica representa a porta de correr pelo
-    /// painel em si, não por indicação de movimento. Vãos largos ganham duas
-    /// folhas de meia largura, ligeiramente deslocadas uma da outra — que é como
-    /// se desenha uma porta de correr de duas folhas.
+    /// **No arrow.** Architectural convention represents a sliding door by the
+    /// panel itself, not by an indication of movement. Wide openings get two
+    /// half-width leaves, slightly offset from each other — which is how a
+    /// two-leaf sliding door is drawn.
     private func drawSlidingDoor(
         in context: inout GraphicsContext,
         from a: CGPoint,
@@ -172,7 +173,7 @@ struct FloorPlanView: View {
         let direction = CGVector(dx: (b.x - a.x) / width, dy: (b.y - a.y) / width)
         let leafThickness = wallWidth * 0.42
 
-        /// Painel entre duas frações do vão, deslocado da linha da parede.
+        /// Panel spanning two fractions of the opening, offset from the wall line.
         func panel(from startFraction: CGFloat, to endFraction: CGFloat, offset: CGFloat) {
             let p1 = CGPoint(
                 x: a.x + direction.dx * width * startFraction + inwardNormal.dx * offset,
@@ -193,7 +194,7 @@ struct FloorPlanView: View {
         }
 
         if width >= twoLeafScreenWidth {
-            // Duas folhas: cada uma cobre metade do vão, em planos distintos.
+            // Two leaves: each covers half the opening, on distinct planes.
             panel(from: 0, to: 0.52, offset: leafThickness * 0.6)
             panel(from: 0.48, to: 1, offset: leafThickness * 1.7)
         } else {
@@ -201,10 +202,10 @@ struct FloorPlanView: View {
         }
     }
 
-    /// Acima desta largura em tela o vão é desenhado com duas folhas.
+    /// Past this on-screen width the opening is drawn with two leaves.
     private var twoLeafScreenWidth: CGFloat { 46 }
 
-    /// Janela: linha dupla fina atravessando o vão.
+    /// Window: thin double line across the opening.
     private func drawWindow(in context: inout GraphicsContext, from a: CGPoint, to b: CGPoint) {
         let length = hypot(b.x - a.x, b.y - a.y)
         guard length > 0.5 else { return }
@@ -220,7 +221,7 @@ struct FloorPlanView: View {
         }
     }
 
-    // MARK: - Cotas
+    // MARK: - Dimension labels
 
     private func drawDimensions(in context: inout GraphicsContext, transform: PlanTransform) {
         for index in 0..<scan.wallCount {
@@ -232,15 +233,15 @@ struct FloorPlanView: View {
 
             let midpoint = CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
             let outward = transform.outwardNormal(ofWall: index, in: scan)
-            // Afasta o suficiente para limpar a espessura da parede.
+            // Offset far enough to clear the wall's thickness.
             let offset = wallWidth / 2 + 18
             let anchor = CGPoint(
                 x: midpoint.x + outward.dx * offset,
                 y: midpoint.y + outward.dy * offset
             )
 
-            // Texto paralelo ao segmento. Se ficar de cabeça para baixo, gira
-            // meia volta — cota de planta se lê da esquerda para a direita.
+            // Text parallel to the segment. If it ends up upside down, turn it
+            // half a turn — plan dimensions read left to right.
             var angle = atan2(b.y - a.y, b.x - a.x)
             if angle > .pi / 2 || angle < -.pi / 2 { angle += .pi }
 
@@ -257,16 +258,17 @@ struct FloorPlanView: View {
         }
     }
 
-    /// Rótulo de área no centroide — mas só se couber dentro do cômodo.
+    /// Area label at the centroid — but only if it fits inside the room.
     ///
-    /// O fundo branco do rótulo apaga o que estiver embaixo. Num cômodo estreito
-    /// o texto extrapola as paredes, e o fundo abria buracos no traço. Em vez de
-    /// remover o fundo (que é o que mantém rótulos legíveis quando se cruzam),
-    /// o rótulo sai do desenho quando não cabe — que é o que se faz numa planta
-    /// real para ambientes pequenos.
+    /// The label's white backdrop erases whatever is underneath. In a narrow
+    /// room the text overruns the walls, and the backdrop punched holes in the
+    /// stroke. Rather than dropping the backdrop (which is what keeps labels
+    /// legible where they cross), the label moves out of the drawing when it
+    /// doesn't fit — as a real plan does for small spaces.
     ///
-    /// O perímetro saiu do desenho de vez: já aparece no painel de medidas e no
-    /// cabeçalho do PDF, e no centro só disputava espaço com a área.
+    /// The perimeter left the drawing for good: it already appears in the
+    /// measurements panel and the PDF header, and in the centre it only competed
+    /// for space with the area.
     private func drawAreaLabel(in context: inout GraphicsContext, transform: PlanTransform) {
         guard scan.corners.count >= 3 else { return }
 
@@ -280,7 +282,7 @@ struct FloorPlanView: View {
         let halfWidth = size.width / 2 + padding
         let halfHeight = size.height / 2 + padding
 
-        // O retângulo do rótulo cabe dentro do polígono, longe do traço da parede?
+        // Does the label's rectangle fit inside the polygon, clear of the wall stroke?
         let clearance = wallWidth / 2 + 2
         let fits = [
             CGPoint(x: center.x - halfWidth - clearance, y: center.y - halfHeight - clearance),
@@ -296,11 +298,12 @@ struct FloorPlanView: View {
         drawLabel(in: &context, text: text, at: anchor, font: font)
     }
 
-    /// Desenha texto sobre um retângulo branco opaco.
+    /// Draws text over an opaque white rectangle.
     ///
-    /// É a convenção de desenho técnico: a cota "quebra" o que estiver embaixo em
-    /// vez de se misturar com ele. Num cômodo estreito os rótulos inevitavelmente
-    /// se aproximam, e sem isso viram um amontoado ilegível.
+    /// This is the technical-drawing convention: the dimension text "breaks"
+    /// whatever lies underneath instead of blending into it. In a narrow room the
+    /// labels inevitably crowd each other, and without this they turn into an
+    /// unreadable pile.
     private func drawLabel(
         in context: inout GraphicsContext,
         text: String,
@@ -322,8 +325,8 @@ struct FloorPlanView: View {
         context.draw(resolved, at: position, anchor: .center)
     }
 
-    /// Menor caminho angular entre dois ângulos, para o arco da porta não dar
-    /// a volta de 270°.
+    /// Shortest angular path between two angles, so the door arc doesn't take
+    /// the 270° way around.
     private func shortestSweepIsClockwise(from start: Double, to end: Double) -> Bool {
         var delta = end - start
         while delta > .pi { delta -= 2 * .pi }
@@ -336,10 +339,10 @@ private func - (lhs: CGPoint, rhs: CGPoint) -> CGPoint {
     CGPoint(x: lhs.x - rhs.x, y: lhs.y - rhs.y)
 }
 
-/// Mapeia coordenadas do cômodo (metros, plano XZ) para pontos da viewport.
+/// Maps room coordinates (metres, XZ plane) to viewport points.
 ///
-/// Faz três coisas, nesta ordem: **gira** para alinhar a parede mais longa à
-/// horizontal, **escala** preservando a proporção e **centraliza**.
+/// Does three things, in this order: **rotates** to align the longest wall to
+/// the horizontal, **scales** preserving the aspect ratio, and **centres**.
 struct PlanTransform {
     private let rotation: Float
     private let scale: CGFloat
@@ -351,17 +354,17 @@ struct PlanTransform {
         let raw = scan.corners.map(\.xz)
         guard raw.count >= 2 else { return nil }
 
-        // A origem do mundo do ARKit tem heading arbitrário — depende de para
-        // onde o celular apontava quando a sessão começou. Desenhar em XZ cru
-        // deixa o cômodo torto na folha. Girar pela parede mais longa dá um
-        // referencial estável e aproveita melhor o espaço da página.
+        // ARKit's world origin has an arbitrary heading — it depends on where
+        // the phone pointed when the session started. Drawing raw XZ leaves the
+        // room skewed on the page. Rotating by the longest wall gives a stable
+        // reference and makes better use of the page.
         //
-        // Calculado numa constante local: ler a propriedade dentro do closure do
-        // `map` capturaria `self` antes de estar inicializado.
+        // The manual adjustment is summed in here rather than applied as a
+        // draw-time transform: this way the bounding box is recomputed already
+        // rotated, and the plan keeps filling the whole page at any orientation.
         //
-        // O ajuste manual entra somado aqui, e não como transformação na hora de
-        // desenhar: assim a caixa envolvente é recalculada já girada, e a planta
-        // continua ocupando a página inteira em qualquer orientação.
+        // Computed into a local constant: reading the property inside the `map`
+        // closure would capture `self` before it is initialised.
         let angle = -Self.dominantAngle(of: raw, closed: scan.isClosed) + Float(extraRotation.radians)
         rotation = angle
 
@@ -386,12 +389,12 @@ struct PlanTransform {
         )
     }
 
-    /// Normaliza para (−180°, 180°] e encosta nos múltiplos de 90° quando já
-    /// está quase lá.
+    /// Normalises to (−180°, 180°] and snaps to multiples of 90° when already
+    /// close to one.
     ///
-    /// Planta técnica quase sempre quer orientação ortogonal, e acertar 90°
-    /// exatos com dois dedos é impossível. A tolerância é estreita o bastante
-    /// para não impedir um ângulo intencionalmente oblíquo.
+    /// A technical plan almost always wants an orthogonal orientation, and
+    /// hitting exactly 90° with two fingers is impossible. The tolerance is
+    /// narrow enough not to block a deliberately oblique angle.
     static func snapRotation(_ angle: Angle, tolerance: Double = 7) -> Angle {
         var degrees = angle.degrees.truncatingRemainder(dividingBy: 360)
         if degrees > 180 { degrees -= 360 }
@@ -400,11 +403,11 @@ struct PlanTransform {
         let nearestRightAngle = (degrees / 90).rounded() * 90
         guard abs(degrees - nearestRightAngle) <= tolerance else { return .degrees(degrees) }
 
-        // 180 e −180 são o mesmo ângulo; escolhe a forma positiva.
+        // 180 and −180 are the same angle; pick the positive form.
         return .degrees(nearestRightAngle == -180 ? 180 : nearestRightAngle)
     }
 
-    /// Ângulo da parede mais longa. É a referência que fica horizontal.
+    /// Angle of the longest wall. That is the reference which ends up horizontal.
     private static func dominantAngle(of points: [SIMD2<Float>], closed: Bool) -> Float {
         let count = closed ? points.count : points.count - 1
         guard count > 0 else { return 0 }
@@ -428,7 +431,7 @@ struct PlanTransform {
         return SIMD2<Float>(point.x * c - point.y * s, point.x * s + point.y * c)
     }
 
-    /// Retângulo ocupado pelo desenho na viewport.
+    /// Rectangle the drawing occupies within the viewport.
     var drawingBounds: CGRect {
         let minimum = polygon.reduce(polygon[0]) { SIMD2(min($0.x, $1.x), min($0.y, $1.y)) }
         let maximum = polygon.reduce(polygon[0]) { SIMD2(max($0.x, $1.x), max($0.y, $1.y)) }
@@ -440,8 +443,8 @@ struct PlanTransform {
         )
     }
 
-    /// Se um ponto **de tela** cai dentro do cômodo. Converte de volta para o
-    /// plano girado e reusa o mesmo teste de contenção das cotas.
+    /// Whether a **screen** point falls inside the room. Converts back to the
+    /// rotated plane and reuses the same containment test as the dimension labels.
     func containsScreenPoint(_ point: CGPoint, in scan: RoomScan) -> Bool {
         guard scale > 0 else { return false }
         let planar = SIMD2<Float>(
@@ -453,7 +456,7 @@ struct PlanTransform {
 
     func point(_ corner: SIMD3<Float>) -> CGPoint { point(corner.xz) }
 
-    /// Vista de cima: X do mundo (já girado) vai para a direita, Z para baixo.
+    /// Top-down view: world X (already rotated) goes right, Z goes down.
     func point(_ planar: SIMD2<Float>) -> CGPoint {
         let rotated = Self.rotate(planar, by: rotation)
         return CGPoint(
@@ -462,12 +465,13 @@ struct PlanTransform {
         )
     }
 
-    /// Normal da parede apontando para **fora** do polígono, em coordenadas de tela.
+    /// Wall normal pointing **outward** from the polygon, in screen coordinates.
     ///
-    /// Decide o lado testando se um ponto deslocado cai dentro do polígono, em vez
-    /// de deduzir do sinal da área. A dedução por sinal erra: a área é calculada na
-    /// convenção matemática (Y para cima) e aplicada na tela, cujo Y cresce para
-    /// baixo — a inversão troca o handedness e joga todas as cotas para dentro.
+    /// Decides the side by testing whether an offset point falls inside the
+    /// polygon, rather than deriving it from the sign of the area. Deriving it
+    /// from the sign gets it wrong: the area is computed in the mathematical
+    /// convention (Y up) and applied on screen, where Y grows downward — the flip
+    /// swaps handedness and throws every label inside the room.
     func outwardNormal(ofWall index: Int, in scan: RoomScan) -> CGVector {
         guard let wall = scan.wall(at: index) else { return CGVector(dx: 0, dy: -1) }
 
@@ -479,15 +483,15 @@ struct PlanTransform {
 
         let normal = SIMD2<Float>(-delta.y / length, delta.x / length)
         let midpoint = (startPlanar + endPlanar) / 2
-        // Amostra a poucos centímetros da parede: perto o suficiente para não
-        // atravessar o cômodo e cair fora pelo outro lado.
+        // Probe a few centimetres from the wall: close enough not to cross the
+        // room and land outside on the far side.
         let probe = midpoint + normal * 0.05
 
         let pointsOutward = !PolygonMath.contains(probe, polygon: polygon)
         let sign: Float = pointsOutward ? 1 : -1
 
-        // Os eixos da tela acompanham os do plano girado, então a normal
-        // transporta diretamente.
+        // The screen axes follow those of the rotated plane, so the normal
+        // carries over directly.
         return CGVector(dx: CGFloat(normal.x * sign), dy: CGFloat(normal.y * sign))
     }
 

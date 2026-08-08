@@ -3,23 +3,23 @@ import Combine
 import RealityKit
 import simd
 
-/// Estado da mira. Deliberadamente grosso (poucos casos, `Equatable`): é publicado
-/// para a SwiftUI, e a posição exata do raycast muda a cada frame. Publicar o
-/// `SIMD3` redesenharia a interface 60×/s sem necessidade — a cor da mira só
-/// precisa saber se há superfície válida embaixo dela.
+/// Reticle state. Deliberately coarse (few cases, `Equatable`): it is published
+/// to SwiftUI, and the raycast's exact position changes every frame. Publishing
+/// the `SIMD3` would redraw the interface 60×/s for no reason — the reticle's
+/// colour only needs to know whether there is a valid surface beneath it.
 enum ReticleState: Equatable, Sendable {
-    /// Nenhuma superfície sob a mira.
+    /// No surface under the reticle.
     case searching
-    /// Plano estimado — usável, mas menos preciso.
+    /// Estimated plane — usable, but less precise.
     case approximate
-    /// Geometria de plano detectada — posição confiável.
+    /// Detected plane geometry — trustworthy position.
     case valid
 }
 
-/// Amostra de um plano horizontal observado, reduzida a valores `Sendable`.
+/// A sample of an observed horizontal plane, reduced to `Sendable` values.
 ///
-/// `ARPlaneAnchor` não é `Sendable`, então os callbacks do delegate extraem
-/// só os escalares de que precisamos antes de cruzar para o MainActor.
+/// `ARPlaneAnchor` is not `Sendable`, so the delegate callbacks extract only the
+/// scalars we need before crossing over to the MainActor.
 private struct PlaneSample: Sendable, Equatable {
     let anchorID: UUID
     let y: Float
@@ -28,22 +28,22 @@ private struct PlaneSample: Sendable, Equatable {
     let isClassifiedCeiling: Bool
 }
 
-/// Candidato a piso, exposto ao HUD antes da confirmação do usuário.
+/// Floor candidate, surfaced to the HUD before the user confirms it.
 struct FloorCandidate: Equatable, Sendable {
     let y: Float
     let area: Float
     let isClassifiedFloor: Bool
 }
 
-/// Ciclo de vida da sessão AR e detecção do piso.
+/// AR session lifecycle and floor detection.
 ///
-/// Não possui a `ARSession`: em RealityKit a `ARView` cria e é dona da sua própria
-/// sessão (`ARView.session` é somente-leitura). Este objeto se acopla a uma view
-/// existente via `attach(to:)`.
+/// Does not own the `ARSession`: in RealityKit the `ARView` creates and owns its
+/// own session (`ARView.session` is read-only). This object attaches to an
+/// existing view through `attach(to:)`.
 @MainActor
 final class ARSessionManager: NSObject, ObservableObject {
 
-    // MARK: - Estado publicado
+    // MARK: - Published state
 
     @Published private(set) var phase: ScanPhase = .detectingFloor
     @Published private(set) var scan = RoomScan()
@@ -52,35 +52,35 @@ final class ARSessionManager: NSObject, ObservableObject {
     @Published private(set) var statusMessage: String?
     @Published private(set) var isFloorLocked = false
 
-    /// O usuário marcou perto do primeiro canto e precisa decidir entre fechar
-    /// o cômodo ou registrar o canto assim mesmo.
+    /// The user marked near the first corner and has to choose between closing
+    /// the room and registering the corner anyway.
     @Published private(set) var offersAutoClose = false
 
     @Published private(set) var wallsBuilt = false
 
-    /// Medições de pé-direito acumuladas nesta sessão.
+    /// Ceiling-height measurements accumulated in this session.
     @Published private(set) var ceilingSamples: [Float] = []
 
-    /// Varredura do teto pela nuvem de feature points.
+    /// Ceiling sweep over the feature-point cloud.
     @Published private(set) var isScanningCeiling = false
     @Published private(set) var ceilingScan: CeilingEstimator.Summary?
 
-    /// Altura estimada pelo encontro parede-teto.
+    /// Height estimated from the wall-ceiling junction.
     ///
-    /// Segunda leitura da mesma varredura, para o caso em que a face do teto não
-    /// tem textura e `ceilingScan` volta vazio.
+    /// A second reading of the same sweep, for when the ceiling face has no
+    /// texture and `ceilingScan` comes back empty.
     @Published private(set) var junctionCeilingHeight: Float?
     @Published private(set) var junctionSampleCount = 0
 
-    /// Teto detectado como plano horizontal pelo ARKit. É o sinal mais
-    /// confiável quando existe, mas depende de o teto ter textura suficiente
-    /// para o ARKit consolidar um plano.
+    /// Ceiling detected by ARKit as a horizontal plane. The most reliable signal
+    /// when it exists, but it depends on the ceiling having enough texture for
+    /// ARKit to consolidate a plane.
     @Published private(set) var detectedCeilingHeight: Float?
 
-    // Rascunho da abertura em construção.
+    // Draft of the opening being marked.
     @Published private(set) var selectedWallIndex: Int?
-    /// Primeiro canto marcado do vão: distância ao longo da parede em `x`,
-    /// altura acima do piso em `y`.
+    /// First marked corner of the opening: distance along the wall in `x`,
+    /// height above the floor in `y`.
     @Published private(set) var draftFirstPoint: SIMD2<Float>?
     @Published private(set) var draftStart: Float?
     @Published private(set) var draftWidth: Float?
@@ -88,105 +88,107 @@ final class ARSessionManager: NSObject, ObservableObject {
     @Published var draftHeight: Float = OpeningType.door.defaultHeight
     @Published var draftSill: Float = OpeningType.door.defaultSillHeight
 
-    /// AR não funciona no Simulator. Quando falso, a interface mostra um aviso
-    /// em vez de tentar criar a `ARView` (que aborta no Simulator).
+    /// AR does not work in the Simulator. When false, the interface shows a
+    /// notice instead of trying to create the `ARView` (which aborts there).
     let isSupported = ARWorldTrackingConfiguration.isSupported
 
     @Published var showDebugOverlays = false {
         didSet { applyDebugOptions() }
     }
 
-    // MARK: - Estado não publicado (alta frequência)
+    // MARK: - Unpublished state (high frequency)
 
-    /// Ponto de mundo atingido pela mira neste frame. Consumido pela camada 3D
-    /// (linha elástica, marcação de canto), nunca diretamente pela SwiftUI.
+    /// World point hit by the reticle this frame. Consumed by the 3D layer
+    /// (elastic line, corner marking), never directly by SwiftUI.
     private(set) var reticleWorldPoint: SIMD3<Float>?
 
-    /// Âncora raiz de todo o conteúdo 3D do cômodo.
+    /// Root anchor for all of the room's 3D content.
     ///
-    /// Respaldada por um `ARAnchor` **rastreado pela sessão**, e não por um
-    /// `AnchorEntity(world:)`. Este último é só um transform fixo no frame da
-    /// sessão: não recebe as correções de deriva do ARKit. Quando o usuário dá a
-    /// volta no cômodo e retorna ao primeiro canto, o ARKit faz *loop closure* e
-    /// reestima o frame do mundo em alguns centímetros — a geometria não-ancorada
-    /// desliza junto, rígida, em relação ao cômodo real.
+    /// Backed by an `ARAnchor` **tracked by the session**, not by an
+    /// `AnchorEntity(world:)`. The latter is merely a fixed transform in the
+    /// session frame: it receives none of ARKit's drift corrections. When the
+    /// user walks around the room and returns to the first corner, ARKit performs
+    /// *loop closure* and re-estimates the world frame by a few centimetres —
+    /// unanchored geometry slides along with it, rigidly, relative to the real
+    /// room.
     ///
-    /// Também não é uma âncora de plano: o ARKit funde plane anchors conforme
-    /// refina a detecção, e a âncora absorvida é *removida* da sessão, levando
-    /// consigo toda a geometria filha.
+    /// Nor is it a plane anchor: ARKit merges plane anchors as it refines
+    /// detection, and the absorbed anchor is *removed* from the session, taking
+    /// all its child geometry with it.
     private(set) var contentAnchor: AnchorEntity?
     private var contentARAnchor: ARAnchor?
 
-    // MARK: - Privado
+    // MARK: - Private
 
     private weak var arView: ARView?
     private let raycastService = RaycastService()
     private var renderer: RoomSceneRenderer?
 
-    /// Último destino válido da linha elástica, preservado para que ela não pisque
-    /// quando a mira momentaneamente sai do piso.
+    /// Last valid endpoint of the elastic line, kept so it doesn't flicker when
+    /// the reticle momentarily leaves the floor.
     private var lastElasticEnd: SIMD3<Float>?
 
-    /// Canto aguardando decisão do usuário no diálogo de fechamento automático.
+    /// Corner awaiting the user's decision in the auto-close prompt.
     private var pendingCorner: SIMD3<Float>?
 
-    /// Distância mínima entre cantos consecutivos. Abaixo disso é quase certo
-    /// que foi toque acidental, e um segmento degenerado quebraria a geometria.
+    /// Minimum spacing between consecutive corners. Below it an accidental tap is
+    /// almost certain, and a degenerate segment would break the geometry.
     private static let minCornerSpacing: Float = 0.10
 
-    /// Raio ao redor do primeiro canto que dispara a oferta de fechamento.
+    /// Radius around the first corner that triggers the close offer.
     private static let autoCloseRadius: Float = 0.30
 
-    /// Faixa aceitável de pé-direito.
+    /// Acceptable ceiling-height range.
     ///
-    /// Bem mais larga que os 2,00–4,00 m da especificação: telhado aparente,
-    /// mezanino e pé-direito duplo passam facilmente de 4 m, e recusar a medida
-    /// nesses casos obrigaria a digitar tudo à mão. O limite existe para pegar
-    /// erro grosseiro de mira, não para impor um teto padrão.
+    /// Much wider than the spec's 2.00–4.00 m: exposed roofs, mezzanines and
+    /// double-height rooms comfortably exceed 4 m, and rejecting the measurement
+    /// there would force everything to be typed by hand. The limit exists to
+    /// catch gross aiming errors, not to impose a standard ceiling.
     static let minCeilingHeight: Float = 1.8
     static let maxCeilingHeight: Float = 6.0
 
-    /// Dimensões mínimas de um vão.
+    /// Minimum dimensions of an opening.
     private static let minOpeningWidth: Float = 0.30
     private static let minOpeningHeight: Float = 0.30
 
-    /// Folga nas bordas da parede ao mirar o plano vertical dela.
+    /// Slack at the wall's edges when aiming at its vertical plane.
     private static let wallAimTolerance: Float = 0.20
 
-    /// Distância mínima das paredes para um feature point contar como teto.
+    /// Minimum distance from the walls for a feature point to count as ceiling.
     private static let ceilingWallMargin: Float = 0.35
 
-    /// Distância máxima da parede para um ponto contar como junção parede-teto.
-    /// Fica abaixo de `ceilingWallMargin`: as duas faixas não se sobrepõem.
+    /// Maximum distance from a wall for a point to count as wall-ceiling
+    /// junction. Below `ceilingWallMargin`: the two bands do not overlap.
     private static let junctionWallDistance: Float = 0.25
 
-    /// A nuvem é lida a cada N frames. Ler a 60 Hz não acrescenta pontos novos
-    /// na mesma proporção — os feature points persistem entre frames.
+    /// The cloud is read every N frames. Reading at 60 Hz does not add new points
+    /// in proportion — feature points persist across frames.
     private static let ceilingScanFrameInterval = 5
 
-    /// Planos horizontais observados até agora, por identificador de âncora.
+    /// Horizontal planes observed so far, keyed by anchor identifier.
     private var planeSamples: [UUID: PlaneSample] = [:]
 
-    /// Feature points já contabilizados na varredura do teto.
+    /// Feature points already counted in the ceiling sweep.
     private var seenFeaturePointIDs: Set<UInt64> = []
     private var ceilingScanHeights: [Float] = []
     private var junctionHeights: [Float] = []
     private var framesSinceCeilingScan = 0
     private var latestCameraPosition: SIMD3<Float>?
 
-    /// Área mínima para considerar um plano como piso.
+    /// Minimum area for a plane to be considered as the floor.
     private static let minFloorArea: Float = 0.5
-    /// Distância vertical mínima entre a câmera e o plano para descartar mesas e camas.
-    /// Um celular é segurado por volta de 1,2–1,6 m; uma mesa fica a ~0,75 m.
+    /// Minimum vertical distance between camera and plane, to rule out tables and
+    /// beds. A phone is held around 1.2–1.6 m; a table sits at ~0.75 m.
     private static let minCameraDrop: Float = 0.8
 
-    // MARK: - Ciclo de vida
+    // MARK: - Lifecycle
 
     func attach(to view: ARView) {
         arView = view
         view.session.delegate = self
-        // Fixa a fila do delegate no main queue. Sem isso os callbacks chegam numa
-        // fila indefinida e o `MainActor.assumeIsolated` abaixo não teria garantia.
+        // Pin the delegate queue to main. Without it the callbacks arrive on an
+        // unspecified queue and the `MainActor.assumeIsolated` below would have
+        // no guarantee.
         view.session.delegateQueue = .main
         applyDebugOptions()
         runSession(resetting: true)
@@ -197,8 +199,8 @@ final class ARSessionManager: NSObject, ObservableObject {
         let config = ARWorldTrackingConfiguration()
         config.planeDetection = [.horizontal]
         config.environmentTexturing = .automatic
-        // Sem LiDAR: nada de sceneReconstruction, sceneDepth ou sceneUnderstanding.
-        // A geometria do cômodo é calculada manualmente a partir dos raycasts.
+        // No LiDAR: no sceneReconstruction, sceneDepth or sceneUnderstanding.
+        // The room geometry is computed by hand from the raycasts.
         arView.session.run(config, options: resetting ? [.resetTracking, .removeExistingAnchors] : [])
     }
 
@@ -206,7 +208,7 @@ final class ARSessionManager: NSObject, ObservableObject {
         arView?.session.pause()
     }
 
-    /// Recomeça do zero: limpa o modelo, a cena e o rastreamento.
+    /// Starts over: clears the model, the scene and the tracking.
     func reset() {
         planeSamples.removeAll()
         latestCameraPosition = nil
@@ -240,17 +242,17 @@ final class ARSessionManager: NSObject, ObservableObject {
         runSession(resetting: true)
     }
 
-    // MARK: - Fase: detecção de piso
+    // MARK: - Phase: floor detection
 
-    /// Trava o piso no candidato atual e avança para a marcação de cantos.
+    /// Locks the floor to the current candidate and advances to corner marking.
     ///
-    /// A transição é explícita (botão) mesmo com o piso já detectado: um avanço
-    /// automático surpreenderia o usuário no meio de uma gravação.
+    /// The transition is explicit (a button) even with the floor already
+    /// detected: advancing automatically would surprise the user mid-recording.
     func confirmFloor() {
         guard let candidate = floorCandidate, phase == .detectingFloor else { return }
         installContentAnchor(atWorldY: candidate.y)
-        // A âncora fica exatamente no nível do piso, então no espaço dela o piso
-        // é y = 0. Não há conversão a fazer nem valor a manter sincronizado.
+        // The anchor sits exactly at floor level, so in its space the floor is
+        // y = 0. Nothing to convert, no value to keep in sync.
         scan.floorY = 0
         isFloorLocked = true
         phase = .markingCorners
@@ -259,9 +261,10 @@ final class ARSessionManager: NSObject, ObservableObject {
     private func installContentAnchor(atWorldY worldY: Float) {
         guard let arView, contentAnchor == nil else { return }
 
-        // Posiciona a âncora ao nível do piso, sob a posição atual da câmera.
-        // Ancorar perto do conteúdo importa: uma correção de deriva que envolva
-        // rotação vira erro de posição proporcional à distância até a âncora.
+        // Place the anchor at floor level, under the camera's current position.
+        // Anchoring near the content matters: a drift correction involving
+        // rotation turns into positional error proportional to the distance from
+        // the anchor.
         var transform = matrix_identity_float4x4
         transform.columns.3.x = latestCameraPosition?.x ?? 0
         transform.columns.3.y = worldY
@@ -271,44 +274,44 @@ final class ARSessionManager: NSObject, ObservableObject {
         arView.session.add(anchor: arAnchor)
         contentARAnchor = arAnchor
 
-        // `AnchorEntity(anchor:)` segue as atualizações que o ARKit faz nessa
-        // âncora — é isso que mantém a geometria colada ao cômodo real.
+        // `AnchorEntity(anchor:)` follows the updates ARKit makes to that anchor
+        // — that is what keeps the geometry glued to the real room.
         let anchorEntity = AnchorEntity(anchor: arAnchor)
         arView.scene.addAnchor(anchorEntity)
         contentAnchor = anchorEntity
         renderer = RoomSceneRenderer(root: anchorEntity)
     }
 
-    // MARK: - Conversão de coordenadas
+    // MARK: - Coordinate conversion
 
-    /// Mundo → espaço da âncora de conteúdo.
+    /// World → content anchor space.
     ///
-    /// Os cantos são guardados no espaço da âncora, não em coordenadas de mundo.
-    /// Como o ARKit reposiciona a âncora a cada correção de deriva, coordenadas de
-    /// mundo capturadas em instantes diferentes seriam mutuamente inconsistentes.
-    /// Distâncias e áreas não mudam: a conversão é uma transformação rígida.
+    /// Corners are stored in anchor space, not in world coordinates. Since ARKit
+    /// repositions the anchor on every drift correction, world coordinates
+    /// captured at different moments would be mutually inconsistent. Distances
+    /// and areas are unaffected: the conversion is a rigid transform.
     private func toAnchorSpace(_ worldPoint: SIMD3<Float>) -> SIMD3<Float>? {
         contentAnchor?.convert(position: worldPoint, from: nil)
     }
 
-    /// Direções não sofrem translação, só rotação — daí a sobrecarga própria.
+    /// Directions are not translated, only rotated — hence the separate overload.
     private func directionToAnchorSpace(_ worldDirection: SIMD3<Float>) -> SIMD3<Float>? {
         contentAnchor?.convert(direction: worldDirection, from: nil)
     }
 
-    /// Altura do piso em coordenadas de mundo, que é o frame em que o raycast opera.
+    /// Floor height in world coordinates, which is the frame the raycast works in.
     private var worldFloorY: Float? {
         contentAnchor?.convert(position: SIMD3<Float>(0, scan.floorY, 0), to: nil).y
     }
 
-    // MARK: - Fase: marcação de cantos
+    // MARK: - Phase: corner marking
 
-    /// Há superfície válida sob a mira para registrar um canto.
+    /// Whether there is a valid surface under the reticle to register a corner.
     var canMarkCorner: Bool {
         phase == .markingCorners && !scan.isClosed && reticleState != .searching
     }
 
-    /// Três cantos já definem um polígono com área.
+    /// Three corners already define a polygon with area.
     var canClosePolygon: Bool {
         phase == .markingCorners && !scan.isClosed && scan.corners.count >= 3
     }
@@ -331,9 +334,9 @@ final class ARSessionManager: NSObject, ObservableObject {
               let hit = reticleWorldPoint,
               let local = toAnchorSpace(hit) else { return }
 
-        // Trava o Y no piso. O raycast contra plano estimado devolve alturas
-        // ligeiramente diferentes a cada ponto; sem travar, o polígono fica
-        // não-planar e a área do shoelace sai errada.
+        // Lock Y to the floor. Raycasting against an estimated plane returns
+        // slightly different heights at each point; without the lock the polygon
+        // ends up non-planar and the shoelace area comes out wrong.
         let corner = local.with(y: scan.floorY)
 
         if let last = scan.corners.last, simd_distance(last, corner) < Self.minCornerSpacing {
@@ -341,9 +344,9 @@ final class ARSessionManager: NSObject, ObservableObject {
             return
         }
 
-        // Perto do primeiro canto: quase sempre a intenção é fechar o cômodo.
-        // A especificação pede *oferecer* o fechamento, não fechar sozinho —
-        // então o canto fica pendente até o usuário escolher.
+        // Near the first corner: the intent is almost always to close the room.
+        // The specification asks for the closure to be *offered*, not performed
+        // automatically — so the corner stays pending until the user chooses.
         if scan.corners.count >= 3,
            let first = scan.corners.first,
            simd_distance(first, corner) < Self.autoCloseRadius {
@@ -355,15 +358,15 @@ final class ARSessionManager: NSObject, ObservableObject {
         commit(corner)
     }
 
-    /// Fecha o cômodo no primeiro canto, descartando o canto pendente.
+    /// Closes the room at the first corner, discarding the pending one.
     func acceptAutoClose() {
         pendingCorner = nil
         offersAutoClose = false
         closePolygon()
     }
 
-    /// Registra o canto pendente mesmo estando perto do primeiro — cômodos
-    /// estreitos legitimamente têm cantos a menos de 30 cm um do outro.
+    /// Registers the pending corner despite it being near the first — narrow
+    /// rooms legitimately have corners less than 30 cm apart.
     func declineAutoClose() {
         guard let pendingCorner else { return }
         self.pendingCorner = nil
@@ -381,13 +384,13 @@ final class ARSessionManager: NSObject, ObservableObject {
         UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
 
-    // MARK: - Paredes 3D
+    // MARK: - 3D walls
 
-    /// Levanta as paredes com a animação de subida.
+    /// Raises the walls with the rise animation.
     ///
-    /// Acionado por botão, e não automaticamente ao fechar o polígono: além da
-    /// regra de transições explícitas, é o momento visualmente mais forte do app
-    /// e quem grava o vídeo precisa disparar na hora certa.
+    /// Button-driven rather than automatic on polygon closure: beyond the
+    /// explicit-transitions rule, this is the app's visually strongest moment and
+    /// whoever is recording needs to trigger it at the right time.
     func buildWalls() {
         guard scan.isClosed, scan.corners.count >= 3 else { return }
         wallsBuilt = true
@@ -395,7 +398,7 @@ final class ARSessionManager: NSObject, ObservableObject {
         UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
 
-    /// Repete a animação sem reconstruir a malha — para regravar a tomada.
+    /// Replays the animation without rebuilding the mesh — for retaking the shot.
     func replayWallRise() {
         guard wallsBuilt else { return }
         renderer?.animateWallRise()
@@ -412,14 +415,14 @@ final class ARSessionManager: NSObject, ObservableObject {
         renderer?.buildWalls(scan: scan, highlighted: selectedWallIndex, animated: false)
     }
 
-    // MARK: - Snap ortogonal
+    // MARK: - Orthogonal snap
 
     func applyOrthogonalSnap() {
         guard scan.isClosed, !scan.isSnapped else { return }
 
         switch OrthogonalSnap.snap(scan.corners) {
         case .success(let corners):
-            // Guarda os originais para que a operação seja reversível.
+            // Keep the originals so the operation stays reversible.
             scan.cornersBeforeSnap = scan.corners
             scan.corners = corners
             renderer?.syncCorners(corners, closed: true)
@@ -453,7 +456,7 @@ final class ARSessionManager: NSObject, ObservableObject {
         }
     }
 
-    // MARK: - Fase: pé-direito
+    // MARK: - Phase: ceiling height
 
     func beginHeightMeasurement() {
         guard scan.isClosed else { return }
@@ -461,11 +464,12 @@ final class ARSessionManager: NSObject, ObservableObject {
         phase = .measuringHeight
     }
 
-    /// Mede o pé-direito mirando no encontro entre parede e teto.
+    /// Measures ceiling height by aiming at the wall-ceiling junction.
     ///
-    /// Sem LiDAR não há superfície no teto para fazer raycast. O raio da câmera é
-    /// intersectado com o plano vertical infinito da parede que está sendo mirada,
-    /// e a altura sai da diferença entre o Y da interseção e o do piso.
+    /// Without LiDAR there is no ceiling surface to raycast against. The camera
+    /// ray is intersected with the infinite vertical plane of the wall being
+    /// aimed at, and the height comes from the difference between the
+    /// intersection's Y and the floor's.
     func measureCeilingHeight() {
         guard phase == .measuringHeight, let arView,
               let ray = raycastService.cameraRay(in: arView),
@@ -489,9 +493,10 @@ final class ARSessionManager: NSObject, ObservableObject {
             return
         }
 
-        // Acumula em vez de substituir: um teto inclinado não tem *um*
-        // pé-direito. Medir em pontos diferentes e escolher entre mínimo, média
-        // e máximo é o que torna a fase utilizável fora de um cômodo de laje.
+        // Accumulate rather than replace: a sloped ceiling has no *single*
+        // height. Measuring at different points and choosing between minimum,
+        // average and maximum is what makes this phase usable outside a room
+        // with a flat slab.
         ceilingSamples.append(height)
         setCeilingHeight(height)
         UINotificationFeedbackGenerator().notificationOccurred(.success)
@@ -503,7 +508,7 @@ final class ARSessionManager: NSObject, ObservableObject {
         rebuildWalls()
     }
 
-    /// Resumo das medições acumuladas, quando há mais de uma.
+    /// Summary of the accumulated measurements, once there is more than one.
     var ceilingStats: (minimum: Float, average: Float, maximum: Float)? {
         guard ceilingSamples.count >= 2,
               let minimum = ceilingSamples.min(),
@@ -517,7 +522,7 @@ final class ARSessionManager: NSObject, ObservableObject {
         setStatus(nil)
     }
 
-    // MARK: - Varredura do teto
+    // MARK: - Ceiling sweep
 
     func toggleCeilingScan() {
         if isScanningCeiling {
@@ -545,11 +550,12 @@ final class ARSessionManager: NSObject, ObservableObject {
         junctionSampleCount = 0
     }
 
-    /// Acumula pontos da nuvem esparsa que possam pertencer ao teto.
+    /// Accumulates points from the sparse cloud that may belong to the ceiling.
     ///
-    /// A deduplicação por identificador é o que torna a estatística honesta:
-    /// cada feature point tem id estável entre frames, e sem ela ficar parado
-    /// apontando para um canto multiplicaria o peso daquele trecho do teto.
+    /// Deduplication by identifier is what makes the statistic honest: each
+    /// feature point has a stable id across frames, and without it, holding still
+    /// while pointing at one corner would multiply the weight of that patch of
+    /// ceiling.
     private func ingestCeilingPoints(in arView: ARView) {
         framesSinceCeilingScan += 1
         guard framesSinceCeilingScan >= Self.ceilingScanFrameInterval else { return }
@@ -583,9 +589,9 @@ final class ARSessionManager: NSObject, ObservableObject {
         let summary = CeilingEstimator.summarize(ceilingScanHeights)
         if summary != ceilingScan { ceilingScan = summary }
 
-        // Segunda leitura dos mesmos pontos, na faixa colada às paredes. É o que
-        // salva o teto sem textura: a face lisa não gera ponto algum, mas a
-        // quina onde ela encontra a parede gera.
+        // A second reading of the same points, in the band hugging the walls.
+        // This is what rescues a textureless ceiling: the smooth face produces no
+        // points at all, but the corner line where it meets the wall does.
         junctionHeights.append(
             contentsOf: CeilingEstimator.junctionHeights(
                 from: fresh,
@@ -604,14 +610,14 @@ final class ARSessionManager: NSObject, ObservableObject {
         if estimate != junctionCeilingHeight { junctionCeilingHeight = estimate }
     }
 
-    /// Maior plano horizontal detectado acima do piso, dentro da faixa plausível.
+    /// Highest horizontal plane detected above the floor, within the plausible range.
     private func recomputeCeilingPlane() {
         guard let worldFloorY else { return }
 
         let candidates = planeSamples.values.compactMap { sample -> Float? in
             let height = sample.y - worldFloorY
             guard height >= Self.minCeilingHeight, height <= Self.maxCeilingHeight else { return nil }
-            // Classificado como teto, ou grande o suficiente para não ser móvel.
+            // Classified as ceiling, or large enough not to be a piece of furniture.
             guard sample.isClassifiedCeiling || sample.area >= Self.minFloorArea else { return nil }
             return height
         }
@@ -623,20 +629,21 @@ final class ARSessionManager: NSObject, ObservableObject {
     func confirmCeilingHeight() {
         guard phase == .measuringHeight else { return }
         isScanningCeiling = false
-        // As paredes podem não ter sido levantadas antes; garante que existam
-        // para que a seleção por toque tenha o que destacar.
+        // The walls may not have been raised yet; make sure they exist so that
+        // tap-to-select has something to highlight.
         if !wallsBuilt { buildWalls() }
         setStatus(nil)
         phase = .markingOpenings
     }
 
-    // MARK: - Fase: portas e janelas
+    // MARK: - Phase: doors and windows
 
-    /// Seleciona a parede sob o ponto tocado na tela.
+    /// Selects the wall under the tapped screen point.
     ///
-    /// Usa o raio da tela contra os planos verticais das paredes, e não um
-    /// hit-test de colisão: as paredes são remalhadas a cada abertura inserida,
-    /// e manter formas de colisão em dia seria mais frágil que refazer a conta.
+    /// Uses the screen ray against the walls' vertical planes rather than a
+    /// collision hit-test: the walls are re-meshed on every opening inserted, and
+    /// keeping collision shapes up to date would be more fragile than redoing the
+    /// math.
     func selectWall(atScreenPoint point: CGPoint) {
         guard phase == .markingOpenings, let arView,
               let ray = arView.ray(through: point),
@@ -669,15 +676,16 @@ final class ARSessionManager: NSObject, ObservableObject {
         selectedWallIndex != nil && draftStart != nil && draftWidth != nil
     }
 
-    /// Marca um dos dois cantos opostos do vão, no plano da parede.
+    /// Marks one of the opening's two opposite corners, on the wall plane.
     ///
-    /// Os dois pontos definem o retângulo inteiro — largura, peitoril e altura —
-    /// do mesmo jeito que os cantos definem o polígono do cômodo.
+    /// The two points define the whole rectangle — width, sill and height — the
+    /// same way the corners define the room polygon.
     ///
-    /// **Diverge da especificação**, que pede dois pontos "ao longo da base" da
-    /// parede. Marcar na base descarta a altura por construção: ela teria que vir
-    /// de um valor padrão, e o retângulo cresce só na horizontal — o que produz
-    /// proporções que não correspondem à abertura real.
+    /// **Diverges from the specification**, which asks for two points "along the
+    /// base" of the wall. Marking on the base discards the height by
+    /// construction: it would have to come from a default, and the rectangle
+    /// grows horizontally only — producing proportions that don't match the real
+    /// opening.
     func markOpeningPoint() {
         guard phase == .markingOpenings, let aim = currentWallAim else { return }
 
@@ -704,25 +712,26 @@ final class ARSessionManager: NSObject, ObservableObject {
         draftWidth = width
         draftSill = min(first.y, aim.y)
         draftHeight = height
-        // Sugere o tipo pela largura: acima de 1,20 m uma folha de giro deixa de
-        // fazer sentido, e o padrão vira porta de correr. Continua editável.
+        // Suggest the type from the width: past 1.20 m a swing leaf stops making
+        // sense and the default becomes a sliding door. Still editable.
         draftType = OpeningType.suggested(forWidth: width)
         setStatus(nil)
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
     }
 
-    /// Troca só o tipo.
+    /// Changes the type only.
     ///
-    /// Não mexe nas dimensões: elas vieram dos dois cantos marcados, e
-    /// sobrescrevê-las com o padrão do tipo jogaria fora a medição do usuário.
+    /// Leaves the dimensions alone: they came from the two marked corners, and
+    /// overwriting them with the type's defaults would throw away the user's
+    /// measurement.
     func setDraftType(_ type: OpeningType) {
         draftType = type
     }
 
-    /// Ponto mirado no plano vertical da parede selecionada: distância ao longo
-    /// da parede em `x`, altura acima do piso em `y`.
+    /// Point aimed at on the selected wall's vertical plane: distance along the
+    /// wall in `x`, height above the floor in `y`.
     ///
-    /// Não é `@Published` — muda a cada frame e só interessa à camada 3D.
+    /// Not `@Published` — it changes every frame and only the 3D layer cares.
     private(set) var currentWallAim: SIMD2<Float>?
 
     private func wallAim(in arView: ARView) -> SIMD2<Float>? {
@@ -740,8 +749,9 @@ final class ARSessionManager: NSObject, ObservableObject {
               let distance = WallGeometry.project(hit.point, onto: wall.start, wall.end)
         else { return nil }
 
-        // O plano é infinito, a parede não. Uma folga nas quinas permite mirar o
-        // canto exato sem perder o alvo, mas sem aceitar um acerto do outro lado.
+        // The plane is infinite, the wall is not. Slack at the corners allows
+        // aiming at the exact corner without losing the target, while still
+        // rejecting a hit on the far side.
         let wallLength = WallGeometry.length(from: wall.start, to: wall.end)
         guard distance >= -Self.wallAimTolerance,
               distance <= wallLength + Self.wallAimTolerance else { return nil }
@@ -799,9 +809,9 @@ final class ARSessionManager: NSObject, ObservableObject {
         phase = .markingOpenings
     }
 
-    // MARK: - Desfazer
+    // MARK: - Undo
 
-    /// Desfaz a última ação da fase atual.
+    /// Undoes the last action of the current phase.
     func undo() {
         switch phase {
         case .markingOpenings:
@@ -853,7 +863,7 @@ final class ARSessionManager: NSObject, ObservableObject {
 
         guard !scan.corners.isEmpty else { return }
         scan.corners.removeLast()
-        // Descarta o destino congelado: ele pertencia ao canto que acabou de sair.
+        // Drop the frozen endpoint: it belonged to the corner just removed.
         lastElasticEnd = nil
         setStatus(nil)
         renderer?.syncCorners(scan.corners, closed: false)
@@ -867,12 +877,13 @@ final class ARSessionManager: NSObject, ObservableObject {
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
     }
 
-    /// Reavalia qual plano observado é o melhor candidato a piso.
+    /// Re-evaluates which observed plane is the best floor candidate.
     ///
-    /// Não basta "primeiro plano horizontal com área suficiente": mesas e camas são
-    /// detectadas antes do chão com frequência, e travar o piso numa mesa arruína
-    /// todas as medidas. Critério: plano mais **baixo** que tenha área suficiente e
-    /// que esteja bem abaixo da câmera (ou que o ARKit tenha classificado como piso).
+    /// "First horizontal plane with enough area" is not enough: tables and beds
+    /// are frequently detected before the floor, and locking the floor onto a
+    /// table ruins every measurement. The criterion: the **lowest** plane with
+    /// enough area that also sits well below the camera (or that ARKit has
+    /// classified as floor).
     private func recomputeFloorCandidate() {
         let cameraY = latestCameraPosition?.y
         let qualifying = planeSamples.values.filter { sample in
@@ -882,7 +893,7 @@ final class ARSessionManager: NSObject, ObservableObject {
             return (cameraY - sample.y) > Self.minCameraDrop
         }
 
-        // Mais baixo primeiro; empate desempata pela maior área.
+        // Lowest first; ties broken by larger area.
         let best = qualifying.min { lhs, rhs in
             lhs.y == rhs.y ? lhs.area > rhs.area : lhs.y < rhs.y
         }
@@ -895,9 +906,9 @@ final class ARSessionManager: NSObject, ObservableObject {
         }
     }
 
-    // MARK: - Loop por frame
+    // MARK: - Per-frame loop
 
-    /// Chamado uma vez por frame para atualizar a mira.
+    /// Called once per frame to update the reticle.
     fileprivate func onFrame() {
         guard let arView else { return }
 
@@ -907,20 +918,22 @@ final class ARSessionManager: NSObject, ObservableObject {
             if phase == .detectingFloor { recomputeFloorCandidate() }
         }
 
-        // O raycast opera em coordenadas de mundo; os cantos vivem no espaço da
-        // âncora. A conversão acontece nas duas fronteiras.
+        // The raycast works in world coordinates; the corners live in anchor
+        // space. The conversion happens at both boundaries.
         let newState: ReticleState
         if phase == .measuringHeight {
-            // Nesta fase o usuário aponta para cima, onde não há piso nenhum.
-            // A mira passa a refletir se existe parede sob o alvo — senão ficaria
-            // branca o tempo todo, sem informar nada.
+            // In this phase the user points upward, where there is no floor at
+            // all. The reticle switches to reflecting whether a wall is under the
+            // target — otherwise it would stay white the whole time, informing
+            // nothing.
             reticleWorldPoint = nil
             currentWallAim = nil
             newState = ceilingAimState(in: arView)
             if isScanningCeiling { ingestCeilingPoints(in: arView) }
         } else if phase == .markingOpenings, selectedWallIndex != nil {
-            // Com a parede escolhida, a mira deixa o piso e passa a percorrer o
-            // plano dela: é o que permite marcar altura e largura no mesmo gesto.
+            // With the wall chosen, the reticle leaves the floor and starts
+            // travelling that wall's plane: that is what allows height and width
+            // to be marked in a single gesture.
             reticleWorldPoint = nil
             currentWallAim = wallAim(in: arView)
             newState = currentWallAim == nil ? .searching : .valid
@@ -938,27 +951,27 @@ final class ARSessionManager: NSObject, ObservableObject {
 
         updateOpeningPreview()
 
-        // Linha elástica do último canto até a mira. O destino é travado em
-        // `floorY` para que a linha fique deitada no piso.
+        // Elastic line from the last corner to the reticle. The endpoint is
+        // locked to `floorY` so the line lies flat on the floor.
         if phase == .markingCorners, !scan.isClosed, let last = scan.corners.last {
             if let point = reticleWorldPoint, let local = toAnchorSpace(point) {
                 lastElasticEnd = local.with(y: scan.floorY)
             }
-            // Sem acerto neste frame — normalmente o celular apontando para cima
-            // ou para o horizonte — a linha continua visível no último ponto
-            // válido, em cinza. Some-la a cada oscilação da mira pisca demais.
+            // No hit this frame — usually the phone pointing up or at the horizon
+            // — so the line stays visible at the last valid point, in grey.
+            // Hiding it on every reticle wobble flickers far too much.
             renderer?.updateElastic(from: last, to: lastElasticEnd, isStale: reticleWorldPoint == nil)
         } else {
             renderer?.hideElastic()
         }
 
-        // Os rótulos vivem no espaço da âncora, então a câmera precisa vir junto.
+        // The labels live in anchor space, so the camera has to come along.
         if let cameraPosition, let localCamera = toAnchorSpace(cameraPosition) {
             renderer?.faceCamera(from: localCamera)
         }
     }
 
-    /// Qualidade da mira apontada para o encontro parede/teto.
+    /// Quality of the aim pointed at the wall-ceiling junction.
     private func ceilingAimState(in arView: ARView) -> ReticleState {
         guard let ray = raycastService.cameraRay(in: arView),
               let origin = toAnchorSpace(ray.origin),
@@ -975,11 +988,11 @@ final class ARSessionManager: NSObject, ObservableObject {
         return inRange ? .valid : .approximate
     }
 
-    /// Retângulo do vão em construção, atualizado a cada frame.
+    /// Rectangle of the opening being marked, refreshed every frame.
     ///
-    /// Antes do segundo canto o retângulo acompanha a mira nas duas dimensões;
-    /// depois dele passa a refletir os steppers, para que altura e peitoril
-    /// mostrem o efeito ao vivo.
+    /// Before the second corner the rectangle follows the reticle in both
+    /// dimensions; after it, it reflects the steppers instead, so that height and
+    /// sill show their effect live.
     private func updateOpeningPreview() {
         guard phase == .markingOpenings,
               let index = selectedWallIndex,
@@ -1039,9 +1052,10 @@ final class ARSessionManager: NSObject, ObservableObject {
 extension ARSessionManager: ARSessionDelegate {
 
     nonisolated func session(_ session: ARSession, didUpdate frame: ARFrame) {
-        // `delegateQueue` foi fixada em `.main` em `attach(to:)`, então já estamos
-        // no MainActor. `assumeIsolated` evita o custo de um hop de ator por frame.
-        // O `ARFrame` não é retido — só a mira é atualizada.
+        // `delegateQueue` was pinned to `.main` in `attach(to:)`, so we are
+        // already on the MainActor. `assumeIsolated` avoids the cost of an actor
+        // hop every frame. The `ARFrame` is not retained — only the reticle is
+        // updated.
         MainActor.assumeIsolated { self.onFrame() }
     }
 
@@ -1058,15 +1072,15 @@ extension ARSessionManager: ARSessionDelegate {
     }
 
     nonisolated func session(_ session: ARSession, didRemove anchors: [ARAnchor]) {
-        // O ARKit remove âncoras ao fundir planos vizinhos — precisamos esquecê-las
-        // para não manter um candidato a piso que já não existe.
+        // ARKit removes anchors when it merges neighbouring planes — we have to
+        // forget them so we don't keep a floor candidate that no longer exists.
         let ids = anchors.compactMap { $0 as? ARPlaneAnchor }.map(\.identifier)
         guard !ids.isEmpty else { return }
         MainActor.assumeIsolated { self.forget(anchorIDs: ids) }
     }
 
     nonisolated func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {
-        // Converte para String aqui, no delegate: `ARCamera` não é `Sendable`.
+        // Convert to String here, in the delegate: `ARCamera` is not `Sendable`.
         let message: String? =
             switch camera.trackingState {
             case .normal:
@@ -1098,21 +1112,21 @@ extension ARSessionManager: ARSessionDelegate {
         MainActor.assumeIsolated { self.setStatus(nil) }
     }
 
-    /// Reduz âncoras de plano horizontais a valores `Sendable`.
+    /// Reduces horizontal plane anchors to `Sendable` values.
     private nonisolated static func samples(from anchors: [ARAnchor]) -> [PlaneSample] {
         anchors.compactMap { anchor in
             guard let plane = anchor as? ARPlaneAnchor, plane.alignment == .horizontal else { return nil }
             let extent = plane.planeExtent
             let classificationWorks = ARPlaneAnchor.isClassificationSupported
             let isFloor = classificationWorks && plane.classification == .floor
-            // Plano horizontal voltado para baixo. O ARKit detecta teto com
-            // `.horizontal` — não é preciso ligar detecção vertical nem nada
-            // que dependa de LiDAR.
+            // Downward-facing horizontal plane. ARKit detects ceilings with
+            // `.horizontal` — no need to enable vertical detection or anything
+            // that depends on LiDAR.
             let isCeiling = classificationWorks && plane.classification == .ceiling
             return PlaneSample(
                 anchorID: plane.identifier,
-                // O centro do plano em coordenadas de mundo: a translação da âncora
-                // mais o offset do centro local.
+                // The plane's centre in world coordinates: the anchor's
+                // translation plus the local centre offset.
                 y: plane.transform.columns.3.y + plane.center.y,
                 area: extent.width * extent.height,
                 isClassifiedFloor: isFloor,

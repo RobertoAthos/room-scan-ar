@@ -1,10 +1,11 @@
 import Foundation
 
-/// Formatação numérica em pt-BR (vírgula decimal, duas casas).
+/// Number formatting in pt-BR (decimal comma, two places), matching the app's
+/// Brazilian Portuguese interface.
 ///
-/// Usa `FormatStyle` em vez de `NumberFormatter`: este último é uma classe
-/// não-`Sendable`, o que impede guardá-lo como `static let` sob a checagem de
-/// concorrência estrita do Swift 6. A saída é idêntica.
+/// Uses `FormatStyle` rather than `NumberFormatter`: the latter is a
+/// non-`Sendable` class, which rules out holding it as a `static let` under
+/// Swift 6 strict concurrency checking. Output is identical.
 enum Format {
     private static let locale = Locale(identifier: "pt_BR")
 
@@ -12,17 +13,17 @@ enum Format {
         .number.locale(locale).precision(.fractionLength(2)).grouping(.never)
     }
 
-    /// Ex.: "3,45 m"
+    /// e.g. "3,45 m"
     static func meters(_ value: Float) -> String {
         "\(Double(value).formatted(twoDecimals)) m"
     }
 
-    /// Ex.: "12,30 m²"
+    /// e.g. "12,30 m²"
     static func squareMeters(_ value: Float) -> String {
         "\(Double(value).formatted(twoDecimals)) m²"
     }
 
-    /// Número puro, sem unidade — para rótulos onde a unidade já está no cabeçalho.
+    /// Bare number, no unit — for labels where the unit is already in the header.
     static func decimal(_ value: Float) -> String {
         Double(value).formatted(twoDecimals)
     }

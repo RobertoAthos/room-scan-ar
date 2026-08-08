@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Tela principal: câmera AR com o HUD sobreposto.
+/// Main screen: the AR camera with the HUD on top.
 struct ScannerView: View {
     @StateObject private var manager = ARSessionManager()
     @Environment(\.scenePhase) private var scenePhase
@@ -10,8 +10,8 @@ struct ScannerView: View {
             if manager.isSupported {
                 ARContainerView(manager: manager)
                     .ignoresSafeArea()
-                    // Seleção de parede por toque, só na fase de aberturas. Fora
-                    // dela o gesto atrapalharia os botões do HUD.
+                    // Tap-to-select a wall, only during the openings phase.
+                    // Outside it the gesture would fight the HUD's buttons.
                     .gesture(wallSelectionGesture, isEnabled: manager.phase == .markingOpenings)
             } else {
                 UnsupportedARView()
@@ -27,9 +27,9 @@ struct ScannerView: View {
             ResultsView(scan: manager.scan) { manager.backToScanning() }
         }
         .onChange(of: scenePhase) { _, newPhase in
-            // A sessão AR precisa parar em segundo plano — o ARKit não mantém
-            // rastreamento com o app suspenso, e retomar sem re-executar a
-            // configuração deixa a cena congelada.
+            // The AR session has to stop in the background — ARKit doesn't keep
+            // tracking with the app suspended, and resuming without re-running
+            // the configuration leaves the scene frozen.
             switch newPhase {
             case .active:     manager.runSession(resetting: false)
             case .background: manager.pause()
@@ -53,8 +53,9 @@ struct ScannerView: View {
     }
 }
 
-/// Aviso exibido quando o app roda onde não há suporte a AR — na prática, o Simulator.
-/// Existe para que o app *abra* no Simulator, que é onde os testes de geometria rodam.
+/// Notice shown when the app runs where AR isn't supported — in practice, the
+/// Simulator. It exists so the app *launches* there, which is where the geometry
+/// tests run.
 private struct UnsupportedARView: View {
     var body: some View {
         ZStack {

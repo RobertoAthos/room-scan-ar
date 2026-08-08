@@ -1,30 +1,30 @@
 import simd
 
-/// Geometria pura do polígono do cômodo.
+/// Pure geometry of the room polygon.
 ///
-/// Não importa ARKit nem RealityKit: entra array de pontos, sai número. É o que
-/// permite testar a matemática no Simulator, sem dispositivo físico.
+/// Imports neither ARKit nor RealityKit: points in, numbers out. That is what
+/// makes the math testable in the Simulator, with no physical device.
 ///
-/// Tudo é calculado no plano XZ — a "planta" —, já que todos os cantos
-/// compartilham a mesma altura por construção. Nas `SIMD2` usadas aqui,
-/// `x` é o X do mundo e `y` é o **Z** do mundo.
+/// Everything is computed in the XZ plane — the "plan" — since every corner
+/// shares the same height by construction. In the `SIMD2` values used here,
+/// `x` is world X and `y` is world **Z**.
 enum PolygonMath {
 
-    // MARK: - Área
+    // MARK: - Area
 
-    /// Área com sinal, pela fórmula do *shoelace*.
+    /// Signed area, by the *shoelace* formula.
     ///
-    /// O sinal indica o sentido de percurso dos vértices, o que interessa para
-    /// orientar a planta baixa e para o snap ortogonal. Para exibir medidas
-    /// use `area`, que é sempre positiva.
+    /// The sign encodes the vertex winding, which matters for orienting the
+    /// floor plan and for the orthogonal snap. To display measurements use
+    /// `area`, which is always positive.
     static func signedArea(_ points: [SIMD2<Float>]) -> Float {
         guard points.count >= 3 else { return 0 }
 
-        // Translada para o primeiro vértice antes de somar. Os cantos chegam em
-        // coordenadas de mundo, que podem estar a dezenas de metros da origem da
-        // sessão AR; multiplicar coordenadas grandes e depois subtrair valores
-        // próximos consome a precisão do Float justamente onde ela importa.
-        // O acúmulo em Double é reforço barato.
+        // Translate to the first vertex before summing. Corners arrive in world
+        // coordinates that can sit tens of metres from the AR session origin;
+        // multiplying large coordinates and then subtracting close values eats
+        // Float precision exactly where it matters. Accumulating in Double is
+        // cheap reinforcement.
         let origin = points[0]
         var sum = 0.0
         for index in points.indices {
@@ -35,15 +35,15 @@ enum PolygonMath {
         return Float(sum / 2)
     }
 
-    /// Área do piso, sempre positiva — independe de os cantos terem sido
-    /// marcados em sentido horário ou anti-horário.
+    /// Floor area, always positive — independent of whether the corners were
+    /// marked clockwise or counter-clockwise.
     static func area(_ points: [SIMD2<Float>]) -> Float {
         abs(signedArea(points))
     }
 
-    // MARK: - Comprimentos
+    // MARK: - Lengths
 
-    /// Comprimento de cada segmento, na ordem dos cantos.
+    /// Length of each segment, in corner order.
     static func segmentLengths(_ points: [SIMD2<Float>], closed: Bool) -> [Float] {
         guard points.count >= 2 else { return [] }
         let count = closed ? points.count : points.count - 1
@@ -56,13 +56,13 @@ enum PolygonMath {
         segmentLengths(points, closed: closed).reduce(0, +)
     }
 
-    // MARK: - Centroide
+    // MARK: - Centroid
 
-    /// Centroide da **área** do polígono, não a média dos vértices.
+    /// Centroid of the polygon's **area**, not the mean of its vertices.
     ///
-    /// A média dos vértices é enviesada por cantos próximos entre si — num
-    /// cômodo em L ela pode até cair fora do polígono. Para posicionar o rótulo
-    /// de área na planta baixa queremos o centro de massa.
+    /// The vertex mean is biased by corners bunched together — in an L-shaped
+    /// room it can even land outside the polygon. To position the area label on
+    /// the floor plan we want the centre of mass.
     static func centroid(_ points: [SIMD2<Float>]) -> SIMD2<Float> {
         guard !points.isEmpty else { return .zero }
         guard points.count >= 3 else { return vertexMean(points) }
@@ -81,11 +81,11 @@ enum PolygonMath {
             accumulatedY += (Double(a.y) + Double(b.y)) * cross
         }
 
-        // Polígono degenerado (cantos colineares): não há centro de massa
-        // definido, cai para a média dos vértices.
+        // Degenerate polygon (collinear corners): no centre of mass is defined,
+        // so fall back to the vertex mean.
         guard abs(doubleArea) > 1e-9 else { return vertexMean(points) }
 
-        // Cx = Σ(xᵢ + xᵢ₊₁)·cross / (6A), e doubleArea = 2A, logo 6A = 3·doubleArea.
+        // Cx = Σ(xᵢ + xᵢ₊₁)·cross / (6A), and doubleArea = 2A, hence 6A = 3·doubleArea.
         let factor = 1.0 / (3.0 * doubleArea)
         return origin + SIMD2<Float>(
             Float(accumulatedX * factor),
@@ -97,17 +97,18 @@ enum PolygonMath {
         points.reduce(.zero, +) / Float(points.count)
     }
 
-    // MARK: - Dentro ou fora
+    // MARK: - Inside or outside
 
-    /// Se o ponto está dentro do polígono, por lançamento de raio.
+    /// Whether the point lies inside the polygon, by ray casting.
     ///
-    /// Conta quantas arestas um raio horizontal partindo do ponto atravessa:
-    /// ímpar significa dentro. Funciona para qualquer polígono simples, côncavo
-    /// inclusive, e **independe do sentido de percurso** dos vértices.
+    /// Counts how many edges a horizontal ray from the point crosses: odd means
+    /// inside. Works for any simple polygon, concave included, and is
+    /// **independent of vertex winding**.
     ///
-    /// É o que permite orientar as cotas da planta baixa sem deduzir handedness
-    /// do sinal da área — dedução que erra quando o sistema de coordenadas de
-    /// destino inverte um eixo, como a tela, cujo Y cresce para baixo.
+    /// That independence is what lets the floor plan orient its dimension labels
+    /// without deriving handedness from the sign of the area — a derivation that
+    /// gets it wrong whenever the destination coordinate system flips an axis,
+    /// as the screen does with its downward-growing Y.
     static func contains(_ point: SIMD2<Float>, polygon: [SIMD2<Float>]) -> Bool {
         guard polygon.count >= 3 else { return false }
 
@@ -118,10 +119,10 @@ enum PolygonMath {
             let a = polygon[current]
             let b = polygon[previous]
 
-            // A aresta cruza a horizontal que passa pelo ponto?
+            // Does this edge straddle the horizontal line through the point?
             let straddles = (a.y > point.y) != (b.y > point.y)
             if straddles {
-                // X do cruzamento, por interpolação linear na aresta.
+                // X of the crossing, by linear interpolation along the edge.
                 let crossingX = (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x
                 if point.x < crossingX { isInside.toggle() }
             }
@@ -131,10 +132,11 @@ enum PolygonMath {
         return isInside
     }
 
-    /// Distância do ponto até a aresta mais próxima do polígono.
+    /// Distance from the point to the polygon's nearest edge.
     ///
-    /// Usada para descartar pontos colados nas paredes ao varrer o teto: um
-    /// feature point a 5 cm da parede quase sempre pertence a ela, não ao teto.
+    /// Used to discard points hugging the walls while sweeping the ceiling: a
+    /// feature point 5 cm from a wall almost always belongs to it, not to the
+    /// ceiling.
     static func distanceToBoundary(_ point: SIMD2<Float>, polygon: [SIMD2<Float>]) -> Float {
         guard polygon.count >= 2 else { return .greatestFiniteMagnitude }
 
@@ -156,24 +158,25 @@ enum PolygonMath {
         let lengthSquared = simd_length_squared(ab)
         guard lengthSquared > 1e-10 else { return simd_distance(point, a) }
 
-        // Parâmetro da projeção sobre a reta, preso ao trecho do segmento — sem
-        // isso a distância seria até a reta infinita, não até a parede.
+        // Projection parameter along the line, clamped to the segment's extent —
+        // without the clamp the distance would be to the infinite line, not to
+        // the wall.
         let t = min(max(simd_dot(point - a, ab) / lengthSquared, 0), 1)
         return simd_distance(point, a + ab * t)
     }
 
-    // MARK: - Paredes
+    // MARK: - Walls
 
-    /// Área líquida de parede: perímetro × pé-direito, menos os vãos.
+    /// Net wall area: perimeter × ceiling height, less the openings.
     static func netWallArea(perimeter: Float, ceilingHeight: Float, openingsArea: Float) -> Float {
         max(0, perimeter * ceilingHeight - openingsArea)
     }
 }
 
-// MARK: - Conveniências em 3D
+// MARK: - 3D conveniences
 
-/// Sobrecargas que projetam cantos 3D em XZ. Mantêm as funções acima puramente
-/// bidimensionais, que é como elas são testadas.
+/// Overloads that project 3D corners into XZ. They keep the functions above
+/// purely two-dimensional, which is how they are tested.
 extension PolygonMath {
     static func signedArea(_ corners: [SIMD3<Float>]) -> Float {
         signedArea(corners.map(\.xz))

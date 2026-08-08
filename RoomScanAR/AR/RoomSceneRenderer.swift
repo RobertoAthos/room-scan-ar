@@ -2,31 +2,31 @@ import RealityKit
 import UIKit
 import simd
 
-/// Constrói e mantém o conteúdo 3D da marcação: esferas nos cantos, linhas entre
-/// cantos consecutivos, linha elástica até a mira e rótulos de comprimento.
+/// Builds and maintains the 3D marking content: corner spheres, lines between
+/// consecutive corners, the elastic line to the reticle, and length labels.
 ///
-/// Materiais são todos `UnlitMaterial`: sem LiDAR a estimativa de iluminação do
-/// ARKit varia bastante, e um material iluminado deixa os marcadores escuros e
-/// ilegíveis em vídeo. Unlit mantém a cor constante.
+/// Every material is an `UnlitMaterial`: without LiDAR, ARKit's lighting estimate
+/// swings a lot, and a lit material leaves the markers dark and unreadable on
+/// video. Unlit keeps the colour constant.
 @MainActor
 final class RoomSceneRenderer {
 
-    /// Raio das esferas de canto — 2 cm, conforme especificação.
+    /// Corner sphere radius — 2 cm, per the specification.
     private static let cornerRadius: Float = 0.02
-    /// Espessura das linhas.
+    /// Line thickness.
     private static let lineThickness: Float = 0.012
-    /// Altura da fonte dos rótulos flutuantes, em metros.
+    /// Font height of the floating labels, in metres.
     private static let labelFontSize: CGFloat = 0.08
-    /// Elevação dos rótulos acima do piso, para não brigarem em Z com as linhas.
+    /// How far labels are lifted above the floor, to stop them z-fighting the lines.
     private static let labelLift: Float = 0.06
-    /// Regenerar malha de texto custa tesselação de fonte. Um rótulo atualizado
-    /// a 10 Hz é perfeitamente legível e custa 6× menos que a cada frame.
+    /// Regenerating a text mesh costs font tessellation. A label refreshed at
+    /// 10 Hz is perfectly readable and costs 6× less than one refreshed every frame.
     private static let labelUpdateFrameInterval = 6
 
     private let root: Entity
 
-    /// Malhas reaproveitadas por todas as instâncias — geometria idêntica,
-    /// só a transformação muda.
+    /// Meshes reused by every instance — identical geometry, only the transform
+    /// changes.
     private let sphereMesh: MeshResource
     private let unitLineMesh: MeshResource
 
@@ -34,7 +34,7 @@ final class RoomSceneRenderer {
     private var edgeNodes: [Entity] = []
     private var labelNodes: [Entity] = []
 
-    /// Duração da animação de subida das paredes.
+    /// Duration of the wall rise animation.
     private static let wallRiseDuration: TimeInterval = 0.8
 
     private var wallsRoot: Entity?
@@ -55,8 +55,8 @@ final class RoomSceneRenderer {
     init(root: Entity) {
         self.root = root
         sphereMesh = .generateSphere(radius: Self.cornerRadius)
-        // Linha unitária: 1 m ao longo do eixo Z local. Escalar só em Z estica o
-        // comprimento sem engrossar a linha.
+        // Unit line: 1 m along the local Z axis. Scaling Z alone stretches the
+        // length without thickening the line.
         unitLineMesh = .generateBox(
             width: Self.lineThickness,
             height: Self.lineThickness,
@@ -64,12 +64,12 @@ final class RoomSceneRenderer {
         )
     }
 
-    // MARK: - Cantos e arestas confirmados
+    // MARK: - Confirmed corners and edges
 
-    /// Reconstrói toda a geometria confirmada.
+    /// Rebuilds all confirmed geometry.
     ///
-    /// Recriar tudo em vez de fazer diff é intencional: são poucos cantos e isto
-    /// só roda ao marcar ou desfazer, nunca por frame.
+    /// Recreating everything rather than diffing is intentional: there are few
+    /// corners, and this only runs on mark or undo, never per frame.
     func syncCorners(_ corners: [SIMD3<Float>], closed: Bool) {
         for node in cornerNodes + edgeNodes + labelNodes { node.removeFromParent() }
         cornerNodes.removeAll()
@@ -105,12 +105,12 @@ final class RoomSceneRenderer {
         }
     }
 
-    // MARK: - Paredes 3D
+    // MARK: - 3D walls
 
-    /// Levanta uma parede por segmento do polígono.
+    /// Raises one wall per polygon segment.
     ///
-    /// Todas as paredes ficam sob um container posicionado no nível do piso —
-    /// é o pivô da animação de subida.
+    /// All walls live under a container positioned at floor level — that
+    /// container is the pivot for the rise animation.
     func buildWalls(scan: RoomScan, highlighted: Int?, animated: Bool) {
         removeWalls()
 
@@ -122,14 +122,14 @@ final class RoomSceneRenderer {
         root.addChild(container)
         wallsRoot = container
 
-        // Uma entidade por parede, e não uma malha única: cada parede é
-        // reconstruída sozinha ao ganhar uma porta ou janela, e o destaque de
-        // seleção troca só o material dela.
+        // One entity per wall rather than a single mesh: each wall is rebuilt on
+        // its own when it gains a door or window, and the selection highlight
+        // swaps only that wall's material.
         for index in 0..<segmentCount {
             guard let wall = scan.wall(at: index) else { continue }
 
-            // As alturas dos painéis são relativas ao container, que já está no
-            // piso — daí a base em 0.
+            // Panel heights are relative to the container, which already sits on
+            // the floor — hence the base at 0.
             let start = wall.start.with(y: 0)
             let end = wall.end.with(y: 0)
 
@@ -157,9 +157,9 @@ final class RoomSceneRenderer {
             container.addChild(entity)
             wallNodes.append(entity)
 
-            // Moldura contrastante em volta de cada vão, para o recorte ficar
-            // legível em vídeo — as paredes translúcidas sozinhas não marcam
-            // bem a borda da abertura.
+            // Contrasting frame around each opening, so the cut-out reads on
+            // video — translucent walls alone don't mark the opening's edge well
+            // enough.
             for opening in scan.openings where opening.wallIndex == index {
                 addOpeningFrame(opening, wallStart: start, wallEnd: end, to: container)
             }
@@ -195,17 +195,18 @@ final class RoomSceneRenderer {
         }
     }
 
-    /// Anima a subida das paredes, de rente ao chão até a altura cheia.
+    /// Animates the walls rising from floor level to full height.
     ///
-    /// A malha é construída já na altura final e o que se anima é a **escala em Y**
-    /// do container, cujo pivô está no piso. Animar os vértices exigiria regerar a
-    /// malha a cada frame; o resultado visual é o mesmo.
+    /// The mesh is built at its final height and what animates is the container's
+    /// **Y scale**, with its pivot on the floor. Animating the vertices would
+    /// require regenerating the mesh every frame; the visual result is the same.
     func animateWallRise() {
         guard let wallsRoot else { return }
 
         let target = wallsRoot.transform
         var flattened = target
-        // Zero exato degenera a matriz de transformação; rente ao chão basta.
+        // An exact zero degenerates the transform matrix; flush with the floor
+        // is enough.
         flattened.scale.y = 0.001
         wallsRoot.transform = flattened
 
@@ -223,44 +224,41 @@ final class RoomSceneRenderer {
         wallNodes.removeAll()
     }
 
-    /// Material das paredes: claro e translúcido, para o cômodo real continuar
-    /// visível por trás.
+    /// Wall material: translucent, so the real room stays visible behind it.
     ///
-    /// `PhysicallyBasedMaterial` em vez de `SimpleMaterial` porque aqui a
-    /// transparência é **declarada** (`blending`), e não inferida do canal alfa
-    /// de uma cor — comportamento que varia entre versões do RealityKit.
-    /// `UnlitMaterial`, e não `PhysicallyBasedMaterial`: com PBR o
-    /// `environmentTexturing` ilumina a parede, e um cômodo claro **lava** a cor
-    /// definida aqui — foi o motivo de as paredes saírem mais claras do que o
-    /// tint pedia. Unlit entrega exatamente a cor escrita, em qualquer ambiente.
+    /// `UnlitMaterial` rather than `PhysicallyBasedMaterial`: under PBR,
+    /// `environmentTexturing` lights the wall, and a bright room **washes out**
+    /// the colour set here — that was why the walls came out lighter than the
+    /// tint asked for. Unlit delivers exactly the colour written, in any
+    /// environment. Transparency is also **declared** here (`blending`) rather
+    /// than inferred from a colour's alpha channel, whose behaviour varies
+    /// between RealityKit versions.
     private static func wallMaterial() -> UnlitMaterial {
         var material = UnlitMaterial(color: Self.wallTint)
-        // A geometria é de dupla face, então cada pixel de parede é composto duas
-        // vezes: 0,22 por face resulta em ~0,39 percebidos, perto dos 0,35 pedidos.
         material.blending = .transparent(opacity: .init(floatLiteral: Self.wallOpacityPerFace))
         return material
     }
 
-    /// Azul profundo, bem saturado: contrasta com paredes brancas — que é o
-    /// cômodo típico — sem virar preto chapado.
+    /// Deep, heavily saturated blue: contrasts against white walls — the typical
+    /// room — without going flat black.
     private static let wallTint = UIColor(red: 0.05, green: 0.16, blue: 0.48, alpha: 1)
 
-    /// Opacidade **por face**. A malha é de dupla face, então o alfa compõe duas
-    /// vezes: 0,32 por face resulta em ~0,54 percebido. Este é o número a mexer
-    /// se as paredes ficarem escuras ou claras demais no vídeo.
+    /// Opacity **per face**. The mesh is double-sided, so alpha composes twice:
+    /// 0.32 per face yields roughly 0.54 perceived. This is the number to touch
+    /// if the walls come out too dark or too light on video.
     private static let wallOpacityPerFace: Float = 0.32
 
-    /// Parede selecionada para receber uma abertura.
+    /// The wall selected to receive an opening.
     private static func highlightMaterial() -> UnlitMaterial {
         var material = UnlitMaterial(color: UIColor.systemYellow)
         material.blending = .transparent(opacity: .init(floatLiteral: 0.42))
         return material
     }
 
-    /// Posiciona a linha unitária entre dois pontos quaisquer no espaço.
+    /// Places the unit line between any two points in space.
     ///
-    /// Diferente de `place`, que só gira em torno de Y por saber que os cantos
-    /// são coplanares: as molduras das aberturas têm arestas verticais.
+    /// Unlike `place`, which only yaws around Y because it knows the corners are
+    /// coplanar: opening frames have vertical edges.
     private static func placeInSpace(_ entity: Entity, from start: SIMD3<Float>, to end: SIMD3<Float>) {
         let delta = end - start
         let length = simd_length(delta)
@@ -270,13 +268,13 @@ final class RoomSceneRenderer {
         entity.orientation = simd_quatf(from: SIMD3<Float>(0, 0, 1), to: delta / length)
     }
 
-    // MARK: - Linha elástica
+    // MARK: - Elastic line
 
-    /// Linha do último canto marcado até a posição atual da mira, com o
-    /// comprimento em construção rotulado no meio.
+    /// Line from the last marked corner to the reticle's current position, with
+    /// the in-progress length labelled at its midpoint.
     ///
-    /// - Parameter isStale: o destino é o último ponto válido, não o do frame
-    ///   atual. Renderizada em cinza para deixar claro que parou de acompanhar.
+    /// - Parameter isStale: the endpoint is the last valid point, not this
+    ///   frame's. Rendered grey to make it obvious it stopped following.
     func updateElastic(from start: SIMD3<Float>?, to end: SIMD3<Float>?, isStale: Bool) {
         guard let start, let end else {
             hideElastic()
@@ -295,11 +293,11 @@ final class RoomSceneRenderer {
         line.isEnabled = true
         Self.place(line, from: start, to: end)
 
-        // Trocar material é custoso; só quando o estado realmente muda.
+        // Swapping materials is costly; only do it when the state actually changes.
         if elasticIsStale != isStale {
             elasticIsStale = isStale
             line.model?.materials = [Self.material(Self.elasticColor(isStale: isStale))]
-            // Força o rótulo a ser regerado na cor nova.
+            // Force the label to be regenerated in the new colour.
             elasticLabelCentimeters = nil
             framesSinceLabelUpdate = Self.labelUpdateFrameInterval
         }
@@ -327,7 +325,7 @@ final class RoomSceneRenderer {
             container = entity
         }
         container.isEnabled = true
-        // A posição acompanha a mira a cada frame; só o *texto* é limitado.
+        // The position tracks the reticle every frame; only the *text* is throttled.
         container.position = position + SIMD3<Float>(0, Self.labelLift, 0)
 
         framesSinceLabelUpdate += 1
@@ -342,13 +340,13 @@ final class RoomSceneRenderer {
         container.addChild(makeTextModel(Format.meters(length), color: Self.elasticColor(isStale: isStale)))
     }
 
-    // MARK: - Prévia do vão em construção
+    // MARK: - Preview of the opening being marked
 
-    /// Retângulo do vão sendo marcado, com largura e altura rotuladas.
+    /// Rectangle of the opening being marked, with width and height labelled.
     ///
-    /// Mesmo papel da linha elástica na marcação de cantos: mostrar a medida
-    /// **antes** de confirmar. Sem isso o usuário só descobre o tamanho do vão
-    /// depois de adicioná-lo.
+    /// Same role the elastic line plays for corner marking: showing the
+    /// measurement **before** confirming. Without it the user only discovers the
+    /// opening's size after adding it.
     func updateOpeningPreview(
         wallStart: SIMD3<Float>,
         wallEnd: SIMD3<Float>,
@@ -385,8 +383,8 @@ final class RoomSceneRenderer {
             Self.placeInSpace(previewLines[index], from: outline[index], to: outline[(index + 1) % 4])
         }
 
-        // Largura embaixo, altura na lateral — as duas cotas que o usuário
-        // está de fato ajustando.
+        // Width below, height at the side — the two dimensions the user is
+        // actually adjusting.
         placePreviewLabel(
             &previewWidthLabel,
             text: Format.meters(width),
@@ -431,8 +429,8 @@ final class RoomSceneRenderer {
         entity.isEnabled = true
         entity.position = position
 
-        // Mesma economia da linha elástica: regenerar malha de texto é caro,
-        // e o valor só muda de verdade na casa do centímetro.
+        // Same saving as the elastic line: regenerating a text mesh is expensive,
+        // and the value only really changes at centimetre granularity.
         let centimeters = Int((value * 100).rounded())
         guard centimeters != cache else { return }
         cache = centimeters
@@ -441,12 +439,12 @@ final class RoomSceneRenderer {
         entity.addChild(makeTextModel(text, color: color))
     }
 
-    // MARK: - Orientação dos rótulos
+    // MARK: - Label orientation
 
-    /// Gira os rótulos para encarar a câmera, em torno de Y.
+    /// Turns the labels to face the camera, around Y.
     ///
-    /// Billboard só no eixo vertical (e não completo): o texto fica sempre em pé,
-    /// que é como uma cota de planta é lida.
+    /// Billboarding on the vertical axis only (not full): the text always stays
+    /// upright, which is how a plan's dimension text is read.
     func faceCamera(from cameraPosition: SIMD3<Float>) {
         for node in labelNodes {
             Self.yaw(node, toward: cameraPosition)
@@ -459,7 +457,7 @@ final class RoomSceneRenderer {
         }
     }
 
-    // MARK: - Limpeza
+    // MARK: - Teardown
 
     func clear() {
         removeWalls()
@@ -484,7 +482,7 @@ final class RoomSceneRenderer {
         previewHeightCentimeters = nil
     }
 
-    // MARK: - Fábricas
+    // MARK: - Factories
 
     private func makeLabelContainer(text: String, at position: SIMD3<Float>, color: UIColor) -> Entity {
         let container = Entity()
@@ -501,8 +499,8 @@ final class RoomSceneRenderer {
             alignment: .center
         )
         let model = ModelEntity(mesh: mesh, materials: [Self.material(color)])
-        // O texto nasce com a origem no canto inferior esquerdo; recentraliza para
-        // que o container possa ser posicionado no meio do segmento.
+        // Generated text starts with its origin at the lower-left corner;
+        // recentre it so the container can be positioned at the segment midpoint.
         model.position = -mesh.bounds.center
         return model
     }
@@ -511,8 +509,8 @@ final class RoomSceneRenderer {
         UnlitMaterial(color: color)
     }
 
-    /// Cor da moldura por tipo de abertura. Contra a parede escura, cores
-    /// saturadas distinguem os tipos de relance em vídeo.
+    /// Frame colour per opening type. Against the dark wall, saturated colours
+    /// tell the types apart at a glance on video.
     static func frameColor(for type: OpeningType) -> UIColor {
         switch type {
         case .door:        .systemOrange
@@ -522,16 +520,16 @@ final class RoomSceneRenderer {
         }
     }
 
-    // MARK: - Matemática de posicionamento
+    // MARK: - Placement math
 
-    /// Posiciona, gira e estica a linha unitária para ligar dois pontos.
+    /// Positions, rotates and stretches the unit line to connect two points.
     private static func place(_ entity: Entity, from start: SIMD3<Float>, to end: SIMD3<Float>) {
         let delta = end - start
         entity.position = (start + end) / 2
         entity.scale = SIMD3<Float>(1, 1, max(simd_length(delta), 0.0001))
-        // Gira o eixo +Z local até a direção do segmento. Como todos os cantos
-        // compartilham o mesmo Y, uma rotação em torno de Y basta:
-        // girar (0,0,1) por θ resulta em (sen θ, 0, cos θ), logo θ = atan2(dx, dz).
+        // Rotates the local +Z axis onto the segment's direction. Since every
+        // corner shares the same Y, a rotation around Y suffices: rotating
+        // (0,0,1) by θ yields (sin θ, 0, cos θ), hence θ = atan2(dx, dz).
         entity.orientation = Self.yawQuaternion(dx: delta.x, dz: delta.z)
     }
 

@@ -1,20 +1,21 @@
 import SwiftUI
 import UIKit
 
-/// Exportação da planta baixa em PDF.
+/// Floor plan export to PDF.
 enum PDFExporter {
 
-    /// A4 retrato em pontos (72 dpi), que é a unidade nativa do PDF.
+    /// A4 portrait in points (72 dpi), which is the PDF's native unit.
     static let pageSize = CGSize(width: 595, height: 842)
 
-    /// Renderiza a planta num PDF **vetorial** e devolve a URL do arquivo temporário.
+    /// Renders the plan into a **vector** PDF and returns the temporary file's URL.
     ///
-    /// O `ImageRenderer` desenha direto num `CGContext` de PDF, em vez de gerar um
-    /// bitmap e embrulhá-lo: linhas e texto saem como vetor, que é o que faz uma
-    /// planta continuar legível ampliada ou impressa.
-    /// - Parameter rotation: orientação escolhida na tela. O PDF sai como a
-    ///   planta está sendo exibida — girar só a visualização não teria sentido,
-    ///   já que o motivo de girar é exportar na orientação certa.
+    /// `ImageRenderer` draws straight into a PDF `CGContext` instead of producing
+    /// a bitmap and wrapping it: lines and text come out as vectors, which is
+    /// what keeps a plan legible when zoomed or printed.
+    ///
+    /// - Parameter rotation: the orientation chosen on screen. The PDF comes out
+    ///   as the plan is being displayed — rotating the view alone would be
+    ///   pointless, since the reason to rotate is to export oriented.
     @MainActor
     static func export(
         scan: RoomScan,
@@ -48,7 +49,8 @@ enum PDFExporter {
     }
 }
 
-/// Página da planta: cabeçalho com as medidas e o desenho abaixo.
+/// The plan's page: a header with the measurements and the drawing below.
+/// User-facing copy stays in Brazilian Portuguese, as the spec requires.
 private struct FloorPlanPage: View {
     let scan: RoomScan
     let rotation: Angle
@@ -86,12 +88,16 @@ private struct FloorPlanPage: View {
             "Perímetro \(Format.meters(scan.perimeter))",
             "Pé-direito \(Format.meters(scan.ceilingHeight))",
         ]
-        if !scan.openings.isEmpty {
-            let doors = scan.openings.count { $0.type == .door }
-            let windows = scan.openings.count { $0.type == .window }
-            if doors > 0 { parts.append(doors == 1 ? "1 porta" : "\(doors) portas") }
-            if windows > 0 { parts.append(windows == 1 ? "1 janela" : "\(windows) janelas") }
+
+        // Iterate over every case rather than special-casing doors and windows:
+        // a plan with only a sliding door or an open passage would otherwise
+        // list no openings at all.
+        for type in OpeningType.allCases {
+            let count = scan.openings.count { $0.type == type }
+            guard count > 0 else { continue }
+            parts.append(count == 1 ? "1 \(type.label.lowercased())" : "\(count) \(type.pluralLabel.lowercased())")
         }
+
         return parts.joined(separator: "  ·  ")
     }
 }

@@ -2,49 +2,50 @@ import ARKit
 import RealityKit
 import simd
 
-/// Marcação de pontos por raycast a partir do centro da tela.
+/// Point marking by raycasting from the centre of the screen.
 ///
-/// Sem LiDAR não existe malha do ambiente. A única superfície contra a qual o
-/// ARKit sabe lançar raios é o plano horizontal que ele detecta por odometria
-/// visual-inercial — e esse plano cobre apenas a região já varrida pelo usuário.
+/// Without LiDAR there is no environment mesh. The only surface ARKit knows how
+/// to cast rays against is the horizontal plane it detects through
+/// visual-inertial odometry — and that plane covers only the region the user has
+/// already swept.
 ///
-/// Uma vez que o piso está travado, porém, deixamos de depender disso: a
-/// interseção do raio da câmera com o plano infinito `y = floorY` é calculada
-/// analiticamente, e vale para qualquer direção que aponte para baixo.
+/// Once the floor is locked, though, that dependency disappears: the
+/// intersection of the camera ray with the infinite plane `y = floorY` is
+/// computed analytically, and holds for any downward-pointing direction.
 ///
-/// `@MainActor` porque `ARView` é isolada ao MainActor no SDK — não é escolha
-/// nossa. É também onde o loop por frame roda, então não há custo de hop.
+/// `@MainActor` because `ARView` is MainActor-isolated in the SDK — not our
+/// choice. It is also where the per-frame loop runs, so there is no hop cost.
 @MainActor
 struct RaycastService {
 
-    // `nonisolated` porque `Hit.isPrecise` — struct aninhada, fora do MainActor —
-    // precisa lê-las.
+    // `nonisolated` because `Hit.isPrecise` — a nested struct, outside the
+    // MainActor — needs to read them.
 
-    /// Distância máxima aceita para uma interseção com o piso.
-    /// Além disso o erro angular vira erro de posição grande demais.
+    /// Maximum accepted distance for a floor intersection.
+    /// Beyond it, angular error turns into too much positional error.
     nonisolated static let maxFloorDistance: Float = 15.0
 
-    /// Além desta distância a marcação continua possível, mas a mira avisa que
-    /// a precisão caiu: um erro de 1° na pose da câmera vira ~10 cm a 6 m.
+    /// Past this distance marking is still possible, but the reticle warns that
+    /// precision has dropped: 1° of camera pose error becomes ~10 cm at 6 m.
     nonisolated static let preciseFloorDistance: Float = 6.0
 
-    /// Tolerância vertical para aceitar um acerto de plano como sendo o piso.
-    /// Serve para descartar mesas e camas que estejam no caminho do raio.
+    /// Vertical tolerance for accepting a plane hit as the floor.
+    /// Serves to discard tables and beds sitting in the ray's path.
     nonisolated private static let floorLevelTolerance: Float = 0.15
 
     struct Hit: Equatable {
         enum Source: Equatable {
-            /// Geometria de plano efetivamente detectada — a fonte mais confiável.
+            /// Actually detected plane geometry — the most reliable source.
             case planeGeometry
-            /// Plano estimado a partir de feature points.
+            /// Plane estimated from feature points.
             case estimatedPlane
-            /// Interseção analítica com o plano do piso já travado.
+            /// Analytic intersection with the already-locked floor plane.
             case lockedFloorPlane
         }
 
         let position: SIMD3<Float>
         let source: Source
-        /// Distância da câmera até o ponto, em metros.
+        /// Distance from the camera to the point, in metres.
         let distance: Float
 
         var isPrecise: Bool {
@@ -56,18 +57,19 @@ struct RaycastService {
         }
     }
 
-    /// Ponto do piso sob a mira.
+    /// The floor point under the reticle.
     ///
-    /// - Parameter lockedFloorY: altura do piso, se já confirmada. Quando presente,
-    ///   habilita a interseção analítica e o descarte de planos fora do nível do piso.
+    /// - Parameter lockedFloorY: floor height, if already confirmed. When
+    ///   present, it enables the analytic intersection and the rejection of
+    ///   planes that aren't at floor level.
     func floorHit(in view: ARView, lockedFloorY: Float?) -> Hit? {
         guard let cameraPosition = cameraRay(in: view)?.origin else { return nil }
 
-        // 1. Geometria de plano detectada: a fonte mais confiável quando existe.
+        // 1. Detected plane geometry: the most reliable source when it exists.
         if let point = planeGeometryHit(in: view) {
             if let lockedFloorY {
-                // Um plano de mesa no caminho do raio seria marcado como canto.
-                // Só aceita o acerto se ele estiver no nível do piso.
+                // A table plane in the ray's path would be marked as a corner.
+                // Only accept the hit if it sits at floor level.
                 if abs(point.y - lockedFloorY) <= Self.floorLevelTolerance {
                     return Hit(
                         position: point,
@@ -84,14 +86,14 @@ struct RaycastService {
             }
         }
 
-        // 2. Piso travado: interseção analítica, independente de o plano detectado
-        //    alcançar ou não a região sob a mira.
+        // 2. Floor locked: analytic intersection, regardless of whether the
+        //    detected plane reaches the region under the reticle.
         if let lockedFloorY, let hit = lockedFloorIntersection(in: view, floorY: lockedFloorY) {
             return hit
         }
 
-        // 3. Antes de travar o piso ainda não há plano de referência; resta o
-        //    plano estimado por feature points.
+        // 3. Before the floor is locked there is no reference plane yet; the
+        //    feature-point estimated plane is what's left.
         if lockedFloorY == nil, let point = estimatedPlaneHit(in: view) {
             return Hit(
                 position: point,
@@ -103,22 +105,22 @@ struct RaycastService {
         return nil
     }
 
-    /// Interseção do raio da câmera com o plano horizontal infinito `y = floorY`.
+    /// Intersection of the camera ray with the infinite horizontal plane `y = floorY`.
     ///
-    /// Com origem O, direção D e o plano em `floorY`:
+    /// With origin O, direction D and the plane at `floorY`:
     ///     t = (floorY − O.y) / D.y
-    ///     ponto = O + t·D
-    /// Como D é unitário, `t` já é a distância em metros.
+    ///     point = O + t·D
+    /// Since D is a unit vector, `t` is already the distance in metres.
     func lockedFloorIntersection(in view: ARView, floorY: Float) -> Hit? {
         guard let ray = cameraRay(in: view) else { return nil }
 
-        // Raio paralelo ao piso (celular na vertical) ou apontando para cima:
-        // não existe interseção à frente da câmera.
+        // Ray parallel to the floor (phone held upright) or pointing up: no
+        // intersection exists in front of the camera.
         guard ray.direction.y < -1e-3 else { return nil }
 
         let t = (floorY - ray.origin.y) / ray.direction.y
-        // t negativo significa piso atrás da câmera — acontece se a câmera
-        // estiver abaixo do nível do piso travado.
+        // A negative t means the floor is behind the camera — which happens if
+        // the camera is below the locked floor level.
         guard t > 0, t <= Self.maxFloorDistance else { return nil }
 
         return Hit(
@@ -128,11 +130,11 @@ struct RaycastService {
         )
     }
 
-    /// Raio da câmera no instante atual: origem e direção unitária, em coordenadas de mundo.
+    /// The camera ray right now: origin and unit direction, in world coordinates.
     func cameraRay(in view: ARView) -> (origin: SIMD3<Float>, direction: SIMD3<Float>)? {
         guard let frame = view.session.currentFrame else { return nil }
         let transform = frame.camera.transform
-        // Em ARKit a câmera olha para -Z no seu próprio espaço.
+        // In ARKit the camera looks down -Z in its own space.
         let forward = -SIMD3<Float>(
             transform.columns.2.x,
             transform.columns.2.y,
@@ -141,7 +143,7 @@ struct RaycastService {
         return (transform.translation, simd_normalize(forward))
     }
 
-    // MARK: - Consultas ao ARKit
+    // MARK: - ARKit queries
 
     private func planeGeometryHit(in view: ARView) -> SIMD3<Float>? {
         raycast(in: view, allowing: .existingPlaneGeometry)
@@ -152,10 +154,10 @@ struct RaycastService {
     }
 
     private func raycast(in view: ARView, allowing target: ARRaycastQuery.Target) -> SIMD3<Float>? {
-        // ATENÇÃO: `UIView.center` é o centro do frame no espaço da *superview*,
-        // não o centro da própria view. Com a ARView em tela cheia dentro de uma
-        // ZStack os dois divergem, e o raio sai deslocado. O ponto correto é o
-        // meio de `bounds`.
+        // CAREFUL: `UIView.center` is the frame's centre in the *superview's*
+        // space, not the centre of the view itself. With the ARView full-screen
+        // inside a ZStack the two diverge and the ray comes out offset. The
+        // correct point is the middle of `bounds`.
         guard view.bounds.width > 0, view.bounds.height > 0 else { return nil }
         let screenCenter = CGPoint(x: view.bounds.midX, y: view.bounds.midY)
 

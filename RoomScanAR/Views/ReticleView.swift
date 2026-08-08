@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Mira fixa no centro da tela. Muda de cor conforme há superfície válida embaixo.
+/// Reticle pinned to the centre of the screen. Changes colour depending on
+/// whether there is a valid surface beneath it.
 struct ReticleView: View {
     let state: ReticleState
 
@@ -26,7 +27,7 @@ struct ReticleView: View {
                 .fill(color)
                 .frame(width: 4, height: 4)
 
-            // Traços cardeais ajudam a mirar o encontro parede/piso com precisão.
+            // Cardinal ticks help aim precisely at the wall-floor junction.
             ForEach(0..<4, id: \.self) { index in
                 Capsule()
                     .fill(color)

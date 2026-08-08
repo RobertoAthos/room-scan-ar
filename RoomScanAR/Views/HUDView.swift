@@ -1,6 +1,8 @@
 import SwiftUI
 
-/// Sobreposição da tela AR: instrução no topo, medidas e ações no rodapé.
+/// Overlay on the AR screen: instruction at the top, measurements and actions
+/// at the bottom. User-facing copy stays in Brazilian Portuguese, as the spec
+/// requires.
 struct HUDView: View {
     @ObservedObject var manager: ARSessionManager
 
@@ -14,7 +16,7 @@ struct HUDView: View {
         .padding(.vertical, 12)
     }
 
-    // MARK: - Topo
+    // MARK: - Top
 
     private var topBar: some View {
         VStack(spacing: 8) {
@@ -40,7 +42,7 @@ struct HUDView: View {
         .animation(.easeOut(duration: 0.2), value: manager.statusMessage)
     }
 
-    // MARK: - Rodapé
+    // MARK: - Bottom
 
     @ViewBuilder
     private var bottomBar: some View {
@@ -62,7 +64,7 @@ struct HUDView: View {
         }
     }
 
-    /// Desfazer e Reiniciar acompanham todas as fases, conforme especificação.
+    /// Undo and Restart accompany every phase, per the specification.
     private var persistentControls: some View {
         HStack {
             Toggle(isOn: $manager.showDebugOverlays) {
@@ -95,7 +97,7 @@ struct HUDView: View {
         }
     }
 
-    // MARK: - Fase: detecção de piso
+    // MARK: - Phase: floor detection
 
     private var floorDetectionPanel: some View {
         VStack(spacing: 10) {
@@ -140,7 +142,7 @@ struct HUDView: View {
         .animation(.easeOut(duration: 0.25), value: manager.floorCandidate)
     }
 
-    // MARK: - Fase: marcação de cantos
+    // MARK: - Phase: corner marking
 
     private var markingCornersPanel: some View {
         VStack(spacing: 12) {
@@ -181,8 +183,8 @@ struct HUDView: View {
         return count == 1 ? "1 canto marcado" : "\(count) cantos marcados"
     }
 
-    /// Medidas ao vivo. Com o polígono ainda aberto, a área é uma prévia:
-    /// o *shoelace* fecha implicitamente do último canto ao primeiro.
+    /// Live measurements. With the polygon still open the area is a preview:
+    /// the *shoelace* closes implicitly from the last corner to the first.
     @ViewBuilder
     private var measurements: some View {
         if manager.scan.corners.count >= 3 {
@@ -305,8 +307,8 @@ struct HUDView: View {
         }
     }
 
-    /// Alinhar em 90° e avançar para o pé-direito, ambos disponíveis assim que
-    /// o polígono fecha.
+    /// Snap to 90° and move on to the ceiling height, both available as soon as
+    /// the polygon closes.
     private var closedActions: some View {
         HStack(spacing: 10) {
             if manager.scan.isSnapped {
@@ -343,7 +345,7 @@ struct HUDView: View {
         }
     }
 
-    // MARK: - Fase: pé-direito
+    // MARK: - Phase: ceiling height
 
     private var ceilingHeightPanel: some View {
         VStack(spacing: 12) {
@@ -385,16 +387,17 @@ struct HUDView: View {
                 .tint(.green)
             }
 
-            // Teto inclinado não tem um pé-direito único. Medir vários pontos e
-            // escolher entre mínimo, média e máximo é o que torna a fase
-            // utilizável fora de um cômodo de laje.
+            // A sloped ceiling has no single height. Measuring several points
+            // and choosing between minimum, average and maximum is what makes
+            // this phase usable outside a room with a flat slab.
             if let stats = manager.ceilingStats {
                 slopedCeilingChoice(stats)
             }
 
-            // Fallback manual, obrigatório pela especificação: se a medição
-            // falhar durante a gravação, o usuário ajusta e segue. Stepper em vez
-            // de teclado — o teclado sobre a câmera atrapalha mais do que ajuda.
+            // Manual fallback, required by the specification: if the measurement
+            // fails mid-recording, the user adjusts and moves on. A stepper
+            // rather than a keyboard — a keyboard over the camera gets in the way
+            // more than it helps.
             HStack {
                 Text("Ajuste manual")
                     .font(.footnote)
@@ -430,11 +433,12 @@ struct HUDView: View {
         .background(.black.opacity(0.6), in: .rect(cornerRadius: 16))
     }
 
-    /// Varredura do teto pela nuvem de feature points do ARKit.
+    /// Ceiling sweep over ARKit's feature-point cloud.
     ///
-    /// Complementa a medição ponto a ponto: em vez de mirar quinas, o usuário
-    /// varre o cômodo e a distribuição de alturas descreve o teto inteiro. Só
-    /// funciona onde há textura — teto branco liso não gera feature point.
+    /// Complements point-by-point measuring: instead of aiming at corners, the
+    /// user sweeps the room and the height distribution describes the whole
+    /// ceiling. Only works where there is texture — a smooth white ceiling
+    /// produces no feature points.
     @ViewBuilder
     private var ceilingScanSection: some View {
         VStack(spacing: 8) {
@@ -476,8 +480,8 @@ struct HUDView: View {
                 }
             }
 
-            // Caminho para teto sem textura: a face lisa não gera ponto, a quina
-            // com a parede gera.
+            // The path for a textureless ceiling: the smooth face produces no
+            // points, the corner line with the wall does.
             if let junction = manager.junctionCeilingHeight {
                 Button {
                     manager.setCeilingHeight(junction)
@@ -514,7 +518,7 @@ struct HUDView: View {
         return "\(ceiling) pontos no teto · \(junction) na quina"
     }
 
-    /// Escolha entre as medições acumuladas, para tetos que não são planos.
+    /// Choice among the accumulated measurements, for ceilings that aren't flat.
     private func slopedCeilingChoice(
         _ stats: (minimum: Float, average: Float, maximum: Float)
     ) -> some View {
@@ -555,7 +559,7 @@ struct HUDView: View {
         .tint(abs(manager.scan.ceilingHeight - value) < 0.005 ? .yellow : .white)
     }
 
-    // MARK: - Fase: portas e janelas
+    // MARK: - Phase: doors and windows
 
     private var openingsPanel: some View {
         VStack(spacing: 12) {

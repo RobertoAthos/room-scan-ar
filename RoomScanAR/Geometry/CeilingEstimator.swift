@@ -1,34 +1,35 @@
 import simd
 
-/// Estimativa de pé-direito a partir da nuvem esparsa de feature points.
+/// Ceiling-height estimation from the sparse feature-point cloud.
 ///
-/// Puro: entra array de pontos, sai estatística. Não conhece ARKit.
+/// Pure: points in, statistics out. Knows nothing about ARKit.
 ///
-/// Sem LiDAR não existe malha do teto, mas o ARKit rastreia feature points 3D
-/// enquanto o usuário varre o cômodo. Filtrando os que estão altos e longe das
-/// paredes, a distribuição de alturas descreve o teto — inclusive quando ele é
-/// inclinado, caso em que um número único não representaria nada.
+/// Without LiDAR there is no ceiling mesh, but ARKit does track 3D feature
+/// points while the user sweeps the room. Filtering for the ones that are high
+/// up and away from the walls, the height distribution describes the ceiling —
+/// including when it is sloped, a case in which a single number would represent
+/// nothing.
 enum CeilingEstimator {
 
     struct Summary: Equatable {
         let sampleCount: Int
-        /// Percentil 10 — a parte mais baixa do teto.
+        /// 10th percentile — the lowest part of the ceiling.
         let low: Float
         let median: Float
-        /// Percentil 90 — a parte mais alta.
+        /// 90th percentile — the highest part.
         let high: Float
 
-        /// Diferença entre as pontas. Acima de ~30 cm o teto não é plano.
+        /// Difference between the ends. Past ~30 cm the ceiling is not flat.
         var spread: Float { high - low }
     }
 
-    /// Alturas dos pontos que podem pertencer ao teto.
+    /// Heights of the points that may belong to the ceiling.
     ///
-    /// Três filtros, nesta ordem:
-    /// 1. altura dentro da faixa plausível de pé-direito;
-    /// 2. dentro do polígono do cômodo — descarta o que está em outro ambiente;
-    /// 3. longe das paredes — descarta os pontos das próprias paredes, que são
-    ///    altos e passariam pelos dois primeiros.
+    /// Three filters, in this order:
+    /// 1. height within the plausible ceiling range;
+    /// 2. inside the room polygon — discards what belongs to another space;
+    /// 3. away from the walls — discards points on the walls themselves, which
+    ///    are high up and would pass the first two.
     static func ceilingHeights(
         from points: [SIMD3<Float>],
         floorY: Float,
@@ -51,21 +52,21 @@ enum CeilingEstimator {
         }
     }
 
-    /// Alturas dos pontos que estão sobre o **encontro parede-teto**.
+    /// Heights of the points sitting on the **wall-ceiling junction**.
     ///
-    /// É o inverso de `ceilingHeights`: em vez de descartar o que está perto da
-    /// parede, fica só com isso.
+    /// The inverse of `ceilingHeights`: instead of discarding what lies near the
+    /// wall, it keeps only that.
     ///
-    /// Serve para o caso em que a face do teto não tem textura — laje branca
-    /// lisa não gera feature point nenhum, e a varredura do interior volta
-    /// vazia. A quina onde parede e teto se encontram, porém, é uma
-    /// descontinuidade de sombreamento entre duas superfícies, e existe mesmo no
-    /// teto mais liso. Paredes também carregam muito mais textura que tetos:
-    /// rodapé, tomada, quadro, móvel encostado.
+    /// This covers the case where the ceiling face has no texture — a smooth
+    /// white slab produces no feature points at all, and the interior sweep comes
+    /// back empty. The corner line where wall and ceiling meet, however, is a
+    /// shading discontinuity between two surfaces, and exists even on the
+    /// smoothest ceiling. Walls also carry far more texture than ceilings:
+    /// baseboards, outlets, picture frames, furniture pushed against them.
     ///
-    /// Os pontos colhidos ficam sobre a parede, em alturas variadas. O teto é o
-    /// **topo** dessa distribuição — daí `junctionCeilingHeight` usar um
-    /// percentil alto em vez da mediana.
+    /// The points gathered there sit on the wall at varying heights. The ceiling
+    /// is the **top** of that distribution — hence `junctionCeilingHeight` using
+    /// a high percentile rather than the median.
     static func junctionHeights(
         from points: [SIMD3<Float>],
         floorY: Float,
@@ -80,10 +81,10 @@ enum CeilingEstimator {
             let height = point.y - floorY
             guard height >= minimumHeight, height <= maximumHeight else { return nil }
 
-            // Sem teste de contenção: a quina fica sobre a linha do polígono, e
-            // pontos ligeiramente para fora dela são igualmente válidos — o
-            // traçado dos cantos passa pela face interna da parede, que tem
-            // espessura. Só a distância até a aresta importa.
+            // No containment test: the corner line sits on the polygon's outline,
+            // and points slightly outside it are equally valid — the corner
+            // tracing runs along the wall's inner face, and the wall has
+            // thickness. Only the distance to the edge matters.
             let planar = point.xz
             guard PolygonMath.distanceToBoundary(planar, polygon: polygon) <= maxWallDistance else { return nil }
 
@@ -91,20 +92,21 @@ enum CeilingEstimator {
         }
     }
 
-    /// Altura do teto a partir das amostras da junção.
+    /// Ceiling height derived from the junction samples.
     ///
-    /// Percentil 92, e não o máximo: o topo bruto pegaria um ponto isolado numa
-    /// viga, num trilho de cortina ou já do outro lado da parede.
+    /// 92nd percentile rather than the maximum: the raw top would latch onto an
+    /// isolated point on a beam, on a curtain rail, or already on the far side of
+    /// the wall.
     static func junctionCeilingHeight(_ heights: [Float], minimumSamples: Int = 12) -> Float? {
         guard heights.count >= minimumSamples else { return nil }
         return percentile(heights.sorted(), 0.92)
     }
 
-    /// Resumo por percentis.
+    /// Percentile summary.
     ///
-    /// Percentis, e não mínimo e máximo brutos: a nuvem é ruidosa, e um único
-    /// ponto num lustre ou numa viga solta deslocaria o extremo inteiro. O
-    /// décimo e o nonagésimo percentil descrevem o teto, não os acidentes.
+    /// Percentiles rather than raw min and max: the cloud is noisy, and a single
+    /// point on a light fixture or a loose beam would drag the whole extreme with
+    /// it. The 10th and 90th percentiles describe the ceiling, not the accidents.
     static func summarize(_ heights: [Float], minimumSamples: Int = 12) -> Summary? {
         guard heights.count >= minimumSamples else { return nil }
 
@@ -117,7 +119,7 @@ enum CeilingEstimator {
         )
     }
 
-    /// Percentil com interpolação linear entre as duas amostras vizinhas.
+    /// Percentile with linear interpolation between the two neighbouring samples.
     static func percentile(_ sorted: [Float], _ fraction: Float) -> Float {
         guard !sorted.isEmpty else { return 0 }
         guard sorted.count > 1 else { return sorted[0] }

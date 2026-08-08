@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Tela de resultados: medidas consolidadas, planta baixa e exportação em PDF.
+/// Results screen: consolidated measurements, floor plan and PDF export.
+/// User-facing copy stays in Brazilian Portuguese, as the spec requires.
 struct ResultsView: View {
     let scan: RoomScan
     let onClose: () -> Void
@@ -8,9 +9,9 @@ struct ResultsView: View {
     @State private var pdfURL: URL?
     @State private var exportFailed = false
 
-    /// Rotação confirmada da planta.
+    /// Committed plan rotation.
     @State private var planRotation: Angle = .zero
-    /// Rotação em curso durante o gesto, ainda não confirmada.
+    /// Rotation in progress during the gesture, not yet committed.
     @State private var liveRotation: Angle = .zero
 
     private var effectiveRotation: Angle { planRotation + liveRotation }
@@ -43,7 +44,7 @@ struct ResultsView: View {
         .preferredColorScheme(.light)
     }
 
-    // MARK: - Planta
+    // MARK: - Plan
 
     private var planSection: some View {
         VStack(spacing: 10) {
@@ -59,13 +60,13 @@ struct ResultsView: View {
 
             rotationControls
         }
-        // O PDF sai na orientação exibida, então um arquivo já gerado fica
-        // obsoleto assim que a planta gira.
+        // The PDF comes out at the displayed orientation, so an already
+        // generated file goes stale the moment the plan rotates.
         .onChange(of: planRotation) { _, _ in pdfURL = nil }
     }
 
-    /// Gesto de dois dedos. Os botões de 90° existem em paralelo porque, durante
-    /// uma gravação, botão é mais confiável do que acertar um gesto.
+    /// Two-finger gesture. The 90° buttons exist alongside it because, during a
+    /// recording, a button is more reliable than landing a gesture.
     private var rotationGesture: some Gesture {
         RotateGesture()
             .onChanged { value in
@@ -119,7 +120,7 @@ struct ResultsView: View {
         }
     }
 
-    // MARK: - Medidas
+    // MARK: - Measurements
 
     private var measurementsGrid: some View {
         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
@@ -143,7 +144,7 @@ struct ResultsView: View {
         .background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: 12))
     }
 
-    // MARK: - Paredes e aberturas
+    // MARK: - Walls and openings
 
     private var openingsList: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -198,7 +199,7 @@ struct ResultsView: View {
         }
     }
 
-    // MARK: - Exportação
+    // MARK: - Export
 
     private var exportSection: some View {
         VStack(spacing: 10) {

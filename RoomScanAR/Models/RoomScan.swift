@@ -1,61 +1,61 @@
 import simd
 
-/// Modelo de dados principal da digitalização.
+/// The scan's primary data model.
 ///
-/// Todos os valores estão em **metros**, no espaço da âncora de conteúdo — não
-/// em coordenadas de mundo do ARKit. O ARKit reposiciona suas âncoras a cada
-/// correção de deriva, então pontos capturados em instantes diferentes só são
-/// mutuamente consistentes se expressos em relação à âncora.
+/// Every value is in **metres**, in the content anchor's space — not in ARKit
+/// world coordinates. ARKit repositions its anchors on every drift correction,
+/// so points captured at different moments are only mutually consistent when
+/// expressed relative to the anchor.
 ///
-/// Os cantos são armazenados em ordem sequencial ao redor do cômodo, todos com
-/// o mesmo Y (`floorY`).
+/// Corners are stored in sequential order around the room, all sharing the same
+/// Y (`floorY`).
 struct RoomScan: Sendable {
     var corners: [SIMD3<Float>] = []
 
-    /// Altura do piso no espaço da âncora. A âncora é criada exatamente ao nível
-    /// do piso, então na prática vale 0 — o campo existe para deixar a intenção
-    /// explícita no código de geometria.
+    /// Floor height in anchor space. The anchor is created exactly at floor
+    /// level, so in practice this is 0 — the field exists to keep the intent
+    /// explicit in the geometry code.
     var floorY: Float = 0
     var ceilingHeight: Float = 2.60
     var openings: [Opening] = []
     var isClosed: Bool = false
 
-    /// Cantos originais, guardados antes de aplicar o snap ortogonal
-    /// para que a operação seja reversível.
+    /// Original corners, kept before applying the orthogonal snap so that the
+    /// operation stays reversible.
     var cornersBeforeSnap: [SIMD3<Float>]?
 
     var isSnapped: Bool { cornersBeforeSnap != nil }
 
-    /// Número de segmentos de parede: n cantos fechados formam n paredes,
-    /// n cantos abertos formam n-1.
+    /// Wall segment count: n corners closed form n walls, n corners open form n-1.
     var wallCount: Int {
         guard corners.count >= 2 else { return 0 }
         return isClosed ? corners.count : corners.count - 1
     }
 
-    /// Par de cantos que delimita a parede de índice `index`.
+    /// The pair of corners bounding the wall at `index`.
     func wall(at index: Int) -> (start: SIMD3<Float>, end: SIMD3<Float>)? {
         guard index >= 0, index < wallCount else { return nil }
         return (corners[index], corners[(index + 1) % corners.count])
     }
 }
 
-// MARK: - Medidas
+// MARK: - Measurements
 
-/// Todas derivadas de `PolygonMath`, que é puro. O modelo não guarda medidas
-/// em cache: são O(n) com n < 20, e cache aqui só criaria estado a invalidar.
+/// All derived from `PolygonMath`, which is pure. The model caches no
+/// measurements: they are O(n) with n < 20, and caching here would only create
+/// state to invalidate.
 extension RoomScan {
 
-    /// Área do piso pelo *shoelace*.
+    /// Floor area by the *shoelace* formula.
     ///
-    /// Com o polígono ainda aberto, a fórmula fecha implicitamente do último
-    /// canto ao primeiro — o que dá exatamente a prévia que o HUD mostra
-    /// durante a marcação.
+    /// With the polygon still open the formula closes implicitly from the last
+    /// corner back to the first — which is exactly the preview the HUD shows
+    /// while corners are being marked.
     var floorArea: Float {
         PolygonMath.area(corners)
     }
 
-    /// Perímetro. Só inclui o segmento de fechamento quando o polígono está fechado.
+    /// Perimeter. Includes the closing segment only once the polygon is closed.
     var perimeter: Float {
         PolygonMath.perimeter(corners, closed: isClosed)
     }
@@ -68,7 +68,7 @@ extension RoomScan {
         openings.reduce(0) { $0 + $1.area }
     }
 
-    /// Área de parede descontando os vãos.
+    /// Wall area with the openings deducted.
     var netWallArea: Float {
         PolygonMath.netWallArea(
             perimeter: perimeter,
@@ -77,7 +77,7 @@ extension RoomScan {
         )
     }
 
-    /// Centroide da área, em coordenadas XZ — onde a planta baixa rotula a área.
+    /// Area centroid in XZ — where the floor plan places the area label.
     var centroidXZ: SIMD2<Float> {
         PolygonMath.centroid(corners)
     }

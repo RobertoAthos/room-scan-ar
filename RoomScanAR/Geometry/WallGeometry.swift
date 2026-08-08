@@ -1,13 +1,13 @@
 import simd
 
-/// Geometria de uma parede tratada como plano vertical infinito.
+/// Geometry of a wall treated as an infinite vertical plane.
 ///
-/// Puro: não conhece ARKit. Sem LiDAR não há malha do teto nem das paredes contra
-/// a qual fazer raycast, então tanto a medição de pé-direito quanto a seleção de
-/// parede por toque são resolvidas analiticamente aqui.
+/// Pure: knows nothing about ARKit. Without LiDAR there is no ceiling or wall
+/// mesh to raycast against, so both the ceiling-height measurement and
+/// tap-to-select-a-wall are resolved analytically here.
 enum WallGeometry {
 
-    /// Direção unitária horizontal da parede, do canto inicial para o final.
+    /// Unit horizontal direction of the wall, from start corner to end corner.
     static func direction(from start: SIMD3<Float>, to end: SIMD3<Float>) -> SIMD3<Float>? {
         let delta = SIMD3<Float>(end.x - start.x, 0, end.z - start.z)
         let length = simd_length(delta)
@@ -15,7 +15,8 @@ enum WallGeometry {
         return delta / length
     }
 
-    /// Normal horizontal da parede. Perpendicular à direção, no plano do piso.
+    /// Horizontal normal of the wall. Perpendicular to the direction, in the
+    /// floor plane.
     static func normal(from start: SIMD3<Float>, to end: SIMD3<Float>) -> SIMD3<Float>? {
         guard let direction = direction(from: start, to: end) else { return nil }
         return SIMD3<Float>(direction.z, 0, -direction.x)
@@ -25,11 +26,11 @@ enum WallGeometry {
         simd_length(SIMD3<Float>(end.x - start.x, 0, end.z - start.z))
     }
 
-    /// Distância, ao longo da parede, do canto inicial até a projeção de `point`.
+    /// Distance along the wall from the start corner to the projection of `point`.
     ///
-    /// É o parâmetro que posiciona portas e janelas: guardar a abertura assim, e
-    /// não em coordenadas absolutas, faz com que ela acompanhe a parede se os
-    /// cantos forem ajustados depois — pelo snap ortogonal, por exemplo.
+    /// This is the parameter that positions doors and windows: storing openings
+    /// this way rather than in absolute coordinates makes them follow the wall
+    /// if the corners are adjusted later — by the orthogonal snap, for instance.
     static func project(
         _ point: SIMD3<Float>,
         onto start: SIMD3<Float>,
@@ -40,7 +41,8 @@ enum WallGeometry {
         return simd_dot(offset, direction)
     }
 
-    /// Ponto sobre a parede, a uma distância do canto inicial e a uma altura.
+    /// A point on the wall, at a given distance from the start corner and a
+    /// given height.
     static func point(
         onWallFrom start: SIMD3<Float>,
         to end: SIMD3<Float>,
@@ -54,13 +56,14 @@ enum WallGeometry {
         return base.with(y: start.y + height)
     }
 
-    /// Interseção de um raio com o plano vertical infinito que contém a parede.
+    /// Intersection of a ray with the infinite vertical plane containing the wall.
     ///
-    /// Com ponto P na parede, normal horizontal N, origem O e direção D:
+    /// With point P on the wall, horizontal normal N, ray origin O and direction D:
     ///     t = ((P − O) · N) / (D · N)
-    ///     interseção = O + t·D
+    ///     intersection = O + t·D
     ///
-    /// Devolve `nil` quando o raio é paralelo ao plano ou o atinge atrás da câmera.
+    /// Returns `nil` when the ray is parallel to the plane or meets it behind
+    /// the camera.
     static func intersectVerticalPlane(
         rayOrigin: SIMD3<Float>,
         rayDirection: SIMD3<Float>,
@@ -78,14 +81,14 @@ enum WallGeometry {
         return (rayOrigin + t * rayDirection, t)
     }
 
-    /// Índice da parede que o raio está mirando.
+    /// Index of the wall the ray is aiming at.
     ///
-    /// Considera apenas as paredes cujo plano é atingido **dentro do trecho** do
-    /// segmento — o plano é infinito, mas a parede não. Entre as candidatas,
-    /// escolhe a mais próxima da câmera.
+    /// Only considers walls whose plane is hit **within the segment's extent** —
+    /// the plane is infinite, the wall is not. Among the candidates, picks the
+    /// one closest to the camera.
     ///
-    /// - Parameter tolerance: folga nas extremidades, em metros, para que mirar
-    ///   exatamente num canto não deixe as duas paredes de fora.
+    /// - Parameter tolerance: slack at the ends, in metres, so that aiming
+    ///   exactly at a corner doesn't rule out both adjoining walls.
     static func aimedWall(
         rayOrigin: SIMD3<Float>,
         rayDirection: SIMD3<Float>,
