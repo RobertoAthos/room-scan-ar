@@ -158,12 +158,46 @@ precisão do `Float` exatamente onde ela importa.
 
 ### Pé-direito
 
-Sem LiDAR não há superfície no teto para raycast. O raio da câmera é intersectado
-com o plano vertical infinito da parede mirada, e a altura sai da diferença entre
-o Y da interseção e o do piso.
+Três caminhos, nenhum dependente de LiDAR. Convivem porque falham em situações
+diferentes.
 
-Como teto inclinado não tem um pé-direito único, as medições **acumulam**, com
-escolha entre mínimo, média e máximo.
+**Mira ponto a ponto.** Não há superfície no teto para raycast, então o raio da
+câmera é intersectado com o plano vertical infinito da parede mirada, e a altura
+sai da diferença entre o Y da interseção e o do piso. Como teto inclinado não tem
+um pé-direito único, as medições **acumulam**, com escolha entre mínimo, média e
+máximo.
+
+**Plano de teto detectado.** `planeDetection = [.horizontal]` já detecta planos
+voltados para baixo, e o ARKit os classifica como `.ceiling` — sem LiDAR, por
+aglomeração de feature points. Quando existe, é o sinal mais confiável, e vira um
+botão de aplicação direta.
+
+**Varredura da nuvem de pontos.** `ARFrame.rawFeaturePoints` entrega pontos 3D
+esparsos, também sem LiDAR. Varrendo o cômodo, a distribuição de alturas descreve
+o teto inteiro — o que um teto inclinado exige, já que nele um número único não
+representa nada.
+
+O filtro tem três etapas, e a ordem importa:
+
+1. altura dentro da faixa plausível de pé-direito;
+2. dentro do polígono do cômodo — descarta o que está em outro ambiente;
+3. a pelo menos 35 cm das paredes.
+
+O terceiro é o que faz o resultado valer: pontos de parede também são altos e
+estão dentro do cômodo, e passariam pelos dois primeiros. Sem ele, toda parede
+contaminaria a estatística.
+
+O resumo sai em **percentis 10/50/90**, não em mínimo e máximo brutos. A nuvem é
+ruidosa, e um único ponto num lustre ou numa viga solta deslocaria o extremo
+inteiro.
+
+Cada feature point é contado **uma vez**, por identificador — o ARKit mantém o id
+estável entre frames. Sem isso, ficar parado apontando para um canto
+multiplicaria o peso daquele trecho do teto.
+
+> **Os dois últimos dependem de textura.** Teto branco liso e fosco não gera
+> feature point, e ali nenhum deles funciona. A mira ponto a ponto e o ajuste
+> manual continuam sendo o caminho nesse caso.
 
 ### Paredes 3D
 
@@ -266,7 +300,7 @@ Marcações com erro residual acima de 15% do perímetro são rejeitadas. A oper
 RoomScanAR/
 ├── App/          RoomScanARApp
 ├── Models/       RoomScan · Opening · ScanPhase
-├── Geometry/     PolygonMath · WallGeometry · WallMeshBuilder · OrthogonalSnap
+├── Geometry/     PolygonMath · WallGeometry · WallMeshBuilder · OrthogonalSnap · CeilingEstimator
 ├── AR/           ARSessionManager · RaycastService · ARContainerView · RoomSceneRenderer
 ├── Views/        ScannerView · ReticleView · HUDView · FloorPlanView · ResultsView
 └── Support/      Formatting · SIMDExtensions · PDFExporter
@@ -274,10 +308,11 @@ RoomScanAR/
 
 Decisões que sustentam o resto:
 
-**`Geometry/` é puro.** Entra array de pontos, sai número. Só `PolygonMath`,
-`WallGeometry` e `OrthogonalSnap` importam `simd` e nada mais — é o que permite
-testar a matemática no Simulator, sem dispositivo. (`WallMeshBuilder` importa
-`RealityKit` porque produz `MeshResource`.)
+**`Geometry/` é puro.** Entra array de pontos, sai número. `PolygonMath`,
+`WallGeometry`, `OrthogonalSnap` e `CeilingEstimator` importam `simd` e nada mais
+— é o que permite testar a matemática no Simulator, sem dispositivo.
+(`WallMeshBuilder` é a exceção: importa `RealityKit` porque produz
+`MeshResource`.)
 
 **Conteúdo 3D pendurado numa `ARAnchor` registrada na sessão.** Nem
 `AnchorEntity(world:)`, que é só um transform fixo no frame da sessão e não
@@ -303,7 +338,7 @@ SwiftUI 60×/s. Só a cor da mira precisa reagir; o ponto exato fica fora do
 
 ## Testes
 
-52 testes em 11 suítes, cobrindo a geometria pura. ARKit não é testado — não
+66 testes em 13 suítes, cobrindo a geometria pura. ARKit não é testado — não
 faria sentido.
 
 ```bash
@@ -324,6 +359,8 @@ Casos que valem menção:
 | Snap ortogonal | Convergência para 90° em quadrado e em L tortos, fechamento exato, rejeição de forma irregular |
 | Painéis de parede | Porta, janela, vão até o teto, vão maior que a parede, dois vãos na mesma parede |
 | Rotação da planta | Encaixe em 90°, preservação de ângulo oblíquo, normalização de voltas completas |
+| Estimativa de teto | Descarte de pontos de parede e de mobília, resistência a outlier, teto plano vs. inclinado |
+| Distância até a parede | Projeção presa ao trecho do segmento, não à reta infinita |
 
 ---
 
@@ -339,5 +376,8 @@ IFC ou USDZ, modo escuro, i18n além de pt-BR e acessibilidade VoiceOver.
   inversa.
 - **A precisão degrada com a distância.** Além de 6 m a mira avisa: 1° de erro na
   pose da câmera vira ~10 cm de erro na posição.
+- **A varredura de teto exige textura.** Laje branca lisa e fosca não produz
+  feature point, e nem a detecção de plano nem a nuvem funcionam ali. Resta a
+  mira ponto a ponto e o ajuste manual.
 - **Um raio paralelo ao piso não intersecta o piso.** Apontar para o horizonte ou
   para cima não marca canto — é geometria, não é contornável.
