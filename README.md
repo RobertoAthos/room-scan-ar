@@ -171,20 +171,39 @@ Malha construída na altura final; a subida anima a **escala em Y** de ~0 a 1 co
 o pivô no piso. Visual idêntico ao de animar os vértices, sem re-gerar malha por
 frame.
 
-Os triângulos são emitidos nos **dois sentidos de winding** — o usuário está
-dentro do cômodo, e `SimpleMaterial` não expõe `faceCulling`.
+Os triângulos são emitidos nos **dois sentidos de winding**: o usuário está dentro
+do cômodo e precisa enxergar as paredes por dentro. Isso faz o alfa compor duas
+vezes — a opacidade é calibrada por face, não pelo resultado percebido.
 
-### Portas e janelas, sem CSG
+O material é `UnlitMaterial`, e não `PhysicallyBasedMaterial`. Com PBR o
+`environmentTexturing` ilumina a parede, e um cômodo claro **lava** a cor
+definida. Unlit entrega exatamente a cor escrita, em qualquer ambiente.
+
+### Portas, janelas e vãos, sem CSG
+
+Quatro tipos: **porta**, **porta de correr**, **vão aberto** e **janela**. Acima de
+1,20 m de largura o tipo sugerido passa a ser porta de correr — uma folha de giro
+desse tamanho não existe na prática.
 
 O RealityKit não oferece operação booleana de forma prática. Em vez de recortar a
 malha, a parede é **dividida em painéis** que contornam o vão:
 
 ```
-Porta   →  painel esquerdo | painel direito | verga
-Janela  →  painel esquerdo | painel direito | verga | peitoril
+Porta, correr, vão  →  painel esquerdo | painel direito | verga
+Janela              →  painel esquerdo | painel direito | verga | peitoril
 ```
 
 Visualmente indistinguível de um recorte real, e muito mais robusto.
+
+A marcação é feita por **dois cantos opostos no plano da parede** — o raio da
+câmera é intersectado com o plano vertical dela, o que entrega distância e altura
+de uma vez. Largura, peitoril e altura saem dos dois pontos, do mesmo jeito que
+os cantos definem o polígono do cômodo.
+
+Também **diverge da especificação**, que pede dois pontos "ao longo da base".
+Marcar na base descarta a altura por construção: ela teria que vir de um valor
+padrão, e o retângulo cresceria só na horizontal — produzindo proporções que não
+correspondem à abertura real.
 
 ### Snap ortogonal
 
@@ -196,6 +215,45 @@ Como após o snap todos os segmentos ficam alinhados aos eixos do referencial de
 θ₀, o polígono é fechado ajustando **apenas os comprimentos**: a soma dos
 percursos num sentido é equilibrada com a do sentido oposto, em cada eixo. O
 fechamento fica exato e os ângulos retos sobrevivem.
+
+### Planta baixa
+
+Desenhada com `Canvas` do SwiftUI, em estética de desenho técnico: fundo branco,
+traço preto, sem cor decorativa.
+
+**Orientação automática.** A origem do mundo do ARKit tem heading arbitrário —
+depende de para onde o celular apontava quando a sessão começou. Desenhar em XZ
+cru deixa o cômodo torto na folha, e a caixa envolvente desperdiça espaço na
+diagonal. A planta gira sozinha para alinhar a **parede mais longa** à horizontal.
+
+**Rotação manual** por cima disso, com gesto de dois dedos ou botões de 90°. O
+ângulo entra somado dentro do `PlanTransform`, e não como transformação na hora
+de desenhar: a caixa envolvente é recalculada já girada, então a planta continua
+ocupando a página inteira em qualquer orientação, reescalando conforme gira.
+
+Ângulos a menos de 7° de um múltiplo de 90° encostam nele. Planta técnica quase
+sempre quer ortogonal, e acertar 90° exatos com dois dedos é impossível; a
+tolerância é estreita o bastante para não sequestrar um ângulo oblíquo
+intencional.
+
+**O PDF sai na orientação exibida.** Girar só a visualização não teria sentido,
+já que o motivo de girar é exportar orientado.
+
+**As cotas ficam do lado de fora**, e o lado é decidido por um teste de
+ponto-dentro-do-polígono — não pelo sinal da área. A dedução por sinal erra: a
+área é calculada na convenção matemática, com Y para cima, e aplicada na tela,
+cujo Y cresce para baixo. A inversão troca o handedness e joga todas as cotas
+para dentro do cômodo.
+
+O rótulo de área só é desenhado no centroide se couber lá com folga para a
+espessura da parede; caso contrário sai do desenho, como se faz numa planta real
+para ambiente pequeno. O fundo branco dos rótulos apaga o que estiver embaixo —
+convenção de cota técnica —, e deixá-lo cair sobre a parede abriria buracos no
+traço.
+
+**Exportação em PDF vetorial.** O `ImageRenderer` desenha direto num `CGContext`
+de PDF, em vez de gerar bitmap e embrulhá-lo: linhas e texto continuam nítidos
+ampliados ou impressos.
 
 Marcações com erro residual acima de 15% do perímetro são rejeitadas. A operação
 é reversível.
@@ -245,8 +303,8 @@ SwiftUI 60×/s. Só a cor da mira precisa reagir; o ponto exato fica fora do
 
 ## Testes
 
-47 testes em 10 suítes, cobrindo apenas o módulo `Geometry/`. ARKit não é testado
-— não faria sentido.
+52 testes em 11 suítes, cobrindo a geometria pura. ARKit não é testado — não
+faria sentido.
 
 ```bash
 xcodebuild test -scheme RoomScanAR \
@@ -265,6 +323,7 @@ Casos que valem menção:
 | Ponto dentro do polígono | Orienta as cotas da planta; testado no cômodo estreito de 4,28 × 0,87 m que produziu o defeito original |
 | Snap ortogonal | Convergência para 90° em quadrado e em L tortos, fechamento exato, rejeição de forma irregular |
 | Painéis de parede | Porta, janela, vão até o teto, vão maior que a parede, dois vãos na mesma parede |
+| Rotação da planta | Encaixe em 90°, preservação de ângulo oblíquo, normalização de voltas completas |
 
 ---
 
