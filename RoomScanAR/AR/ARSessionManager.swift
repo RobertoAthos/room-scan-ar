@@ -57,6 +57,9 @@ final class ARSessionManager: NSObject, ObservableObject {
 
     @Published private(set) var wallsBuilt = false
 
+    /// Medições de pé-direito acumuladas nesta sessão.
+    @Published private(set) var ceilingSamples: [Float] = []
+
     // Rascunho da abertura em construção.
     @Published private(set) var selectedWallIndex: Int?
     @Published private(set) var draftStart: Float?
@@ -114,9 +117,14 @@ final class ARSessionManager: NSObject, ObservableObject {
     /// Raio ao redor do primeiro canto que dispara a oferta de fechamento.
     private static let autoCloseRadius: Float = 0.30
 
-    /// Faixa aceitável de pé-direito. Fora dela é quase certo erro de mira.
-    private static let minCeilingHeight: Float = 2.0
-    private static let maxCeilingHeight: Float = 4.0
+    /// Faixa aceitável de pé-direito.
+    ///
+    /// Bem mais larga que os 2,00–4,00 m da especificação: telhado aparente,
+    /// mezanino e pé-direito duplo passam facilmente de 4 m, e recusar a medida
+    /// nesses casos obrigaria a digitar tudo à mão. O limite existe para pegar
+    /// erro grosseiro de mira, não para impor um teto padrão.
+    static let minCeilingHeight: Float = 1.8
+    static let maxCeilingHeight: Float = 6.0
 
     /// Largura mínima de um vão.
     private static let minOpeningWidth: Float = 0.30
@@ -170,6 +178,7 @@ final class ARSessionManager: NSObject, ObservableObject {
         selectedWallIndex = nil
         draftStart = nil
         draftWidth = nil
+        ceilingSamples.removeAll()
         setDraftType(.door)
         reticleState = .searching
         statusMessage = nil
@@ -437,6 +446,10 @@ final class ARSessionManager: NSObject, ObservableObject {
             return
         }
 
+        // Acumula em vez de substituir: um teto inclinado não tem *um*
+        // pé-direito. Medir em pontos diferentes e escolher entre mínimo, média
+        // e máximo é o que torna a fase utilizável fora de um cômodo de laje.
+        ceilingSamples.append(height)
         setCeilingHeight(height)
         UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
@@ -445,6 +458,20 @@ final class ARSessionManager: NSObject, ObservableObject {
         scan.ceilingHeight = min(max(value, Self.minCeilingHeight), Self.maxCeilingHeight)
         setStatus(nil)
         rebuildWalls()
+    }
+
+    /// Resumo das medições acumuladas, quando há mais de uma.
+    var ceilingStats: (minimum: Float, average: Float, maximum: Float)? {
+        guard ceilingSamples.count >= 2,
+              let minimum = ceilingSamples.min(),
+              let maximum = ceilingSamples.max() else { return nil }
+        let average = ceilingSamples.reduce(0, +) / Float(ceilingSamples.count)
+        return (minimum, average, maximum)
+    }
+
+    func clearCeilingSamples() {
+        ceilingSamples.removeAll()
+        setStatus(nil)
     }
 
     func confirmCeilingHeight() {
@@ -685,15 +712,25 @@ final class ARSessionManager: NSObject, ObservableObject {
 
         // O raycast opera em coordenadas de mundo; os cantos vivem no espaço da
         // âncora. A conversão acontece nas duas fronteiras.
-        let hit = raycastService.floorHit(in: arView, lockedFloorY: isFloorLocked ? worldFloorY : nil)
-        reticleWorldPoint = hit?.position
-
-        let newState: ReticleState =
-            switch hit {
-            case .none: .searching
-            case .some(let h): h.isPrecise ? .valid : .approximate
-            }
+        let newState: ReticleState
+        if phase == .measuringHeight {
+            // Nesta fase o usuário aponta para cima, onde não há piso nenhum.
+            // A mira passa a refletir se existe parede sob o alvo — senão ficaria
+            // branca o tempo todo, sem informar nada.
+            reticleWorldPoint = nil
+            newState = ceilingAimState(in: arView)
+        } else {
+            let hit = raycastService.floorHit(in: arView, lockedFloorY: isFloorLocked ? worldFloorY : nil)
+            reticleWorldPoint = hit?.position
+            newState =
+                switch hit {
+                case .none: .searching
+                case .some(let h): h.isPrecise ? .valid : .approximate
+                }
+        }
         if newState != reticleState { reticleState = newState }
+
+        updateOpeningPreview()
 
         // Linha elástica do último canto até a mira. O destino é travado em
         // `floorY` para que a linha fique deitada no piso.
@@ -713,6 +750,59 @@ final class ARSessionManager: NSObject, ObservableObject {
         if let cameraPosition, let localCamera = toAnchorSpace(cameraPosition) {
             renderer?.faceCamera(from: localCamera)
         }
+    }
+
+    /// Qualidade da mira apontada para o encontro parede/teto.
+    private func ceilingAimState(in arView: ARView) -> ReticleState {
+        guard let ray = raycastService.cameraRay(in: arView),
+              let origin = toAnchorSpace(ray.origin),
+              let direction = directionToAnchorSpace(ray.direction),
+              let aimed = WallGeometry.aimedWall(
+                  rayOrigin: origin,
+                  rayDirection: direction,
+                  corners: scan.corners,
+                  closed: scan.isClosed
+              ) else { return .searching }
+
+        let height = aimed.point.y - scan.floorY
+        let inRange = height >= Self.minCeilingHeight && height <= Self.maxCeilingHeight
+        return inRange ? .valid : .approximate
+    }
+
+    /// Retângulo do vão em construção, atualizado a cada frame.
+    ///
+    /// Antes do segundo ponto o lado direito acompanha a mira; depois dele fica
+    /// fixo, para que os steppers de altura e peitoril mostrem o efeito ao vivo.
+    private func updateOpeningPreview() {
+        guard phase == .markingOpenings,
+              let index = selectedWallIndex,
+              let wall = scan.wall(at: index),
+              let start = draftStart else {
+            renderer?.hideOpeningPreview()
+            return
+        }
+
+        let end: Float
+        if let width = draftWidth {
+            end = start + width
+        } else if let hit = reticleWorldPoint,
+                  let local = toAnchorSpace(hit),
+                  let distance = WallGeometry.project(local, onto: wall.start, wall.end) {
+            let wallLength = WallGeometry.length(from: wall.start, to: wall.end)
+            end = min(max(distance, 0), wallLength)
+        } else {
+            end = start
+        }
+
+        renderer?.updateOpeningPreview(
+            wallStart: wall.start,
+            wallEnd: wall.end,
+            fromDistance: start,
+            toDistance: end,
+            sill: draftSill,
+            top: min(draftSill + draftHeight, scan.ceilingHeight),
+            color: draftType == .window ? .systemTeal : .systemOrange
+        )
     }
 
     fileprivate func ingest(planes: [PlaneSample]) {

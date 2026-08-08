@@ -356,13 +356,24 @@ struct HUDView: View {
             Button {
                 manager.measureCeilingHeight()
             } label: {
-                Label("Medir mirando no teto", systemImage: "scope")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
+                Label(
+                    manager.ceilingSamples.isEmpty ? "Medir mirando no teto" : "Medir outro ponto",
+                    systemImage: "scope"
+                )
+                .font(.headline)
+                .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .tint(.yellow)
+            .disabled(manager.reticleState == .searching)
+
+            // Teto inclinado não tem um pé-direito único. Medir vários pontos e
+            // escolher entre mínimo, média e máximo é o que torna a fase
+            // utilizável fora de um cômodo de laje.
+            if let stats = manager.ceilingStats {
+                slopedCeilingChoice(stats)
+            }
 
             // Fallback manual, obrigatório pela especificação: se a medição
             // falhar durante a gravação, o usuário ajusta e segue. Stepper em vez
@@ -377,7 +388,7 @@ struct HUDView: View {
                         get: { manager.scan.ceilingHeight },
                         set: { manager.setCeilingHeight($0) }
                     ),
-                    in: 2.0...4.0,
+                    in: ARSessionManager.minCeilingHeight...ARSessionManager.maxCeilingHeight,
                     step: 0.05
                 ) {
                     Text(Format.meters(manager.scan.ceilingHeight))
@@ -400,6 +411,47 @@ struct HUDView: View {
         }
         .padding(14)
         .background(.black.opacity(0.6), in: .rect(cornerRadius: 16))
+    }
+
+    /// Escolha entre as medições acumuladas, para tetos que não são planos.
+    private func slopedCeilingChoice(
+        _ stats: (minimum: Float, average: Float, maximum: Float)
+    ) -> some View {
+        VStack(spacing: 8) {
+            HStack {
+                Text("\(manager.ceilingSamples.count) medições")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.85))
+                Spacer()
+                Button("Limpar") { manager.clearCeilingSamples() }
+                    .font(.caption)
+                    .tint(.white.opacity(0.7))
+            }
+
+            HStack(spacing: 8) {
+                ceilingOption("Mínimo", stats.minimum)
+                ceilingOption("Média", stats.average)
+                ceilingOption("Máximo", stats.maximum)
+            }
+        }
+        .padding(10)
+        .background(.white.opacity(0.10), in: .rect(cornerRadius: 12))
+    }
+
+    private func ceilingOption(_ label: String, _ value: Float) -> some View {
+        Button {
+            manager.setCeilingHeight(value)
+        } label: {
+            VStack(spacing: 1) {
+                Text(label)
+                    .font(.caption2)
+                Text(Format.meters(value))
+                    .font(.footnote.weight(.semibold).monospacedDigit())
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .tint(abs(manager.scan.ceilingHeight - value) < 0.005 ? .yellow : .white)
     }
 
     // MARK: - Fase: portas e janelas

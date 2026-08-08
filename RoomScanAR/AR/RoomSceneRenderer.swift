@@ -46,6 +46,12 @@ final class RoomSceneRenderer {
     private var elasticIsStale: Bool?
     private var framesSinceLabelUpdate = 0
 
+    private var previewLines: [ModelEntity] = []
+    private var previewWidthLabel: Entity?
+    private var previewHeightLabel: Entity?
+    private var previewWidthCentimeters: Int?
+    private var previewHeightCentimeters: Int?
+
     init(root: Entity) {
         self.root = root
         sphereMesh = .generateSphere(radius: Self.cornerRadius)
@@ -223,33 +229,31 @@ final class RoomSceneRenderer {
     /// `PhysicallyBasedMaterial` em vez de `SimpleMaterial` porque aqui a
     /// transparência é **declarada** (`blending`), e não inferida do canal alfa
     /// de uma cor — comportamento que varia entre versões do RealityKit.
-    private static func wallMaterial() -> PhysicallyBasedMaterial {
-        var material = PhysicallyBasedMaterial()
-        material.baseColor = .init(tint: Self.wallTint)
-        material.roughness = 0.85
-        material.metallic = 0.0
+    /// `UnlitMaterial`, e não `PhysicallyBasedMaterial`: com PBR o
+    /// `environmentTexturing` ilumina a parede, e um cômodo claro **lava** a cor
+    /// definida aqui — foi o motivo de as paredes saírem mais claras do que o
+    /// tint pedia. Unlit entrega exatamente a cor escrita, em qualquer ambiente.
+    private static func wallMaterial() -> UnlitMaterial {
+        var material = UnlitMaterial(color: Self.wallTint)
         // A geometria é de dupla face, então cada pixel de parede é composto duas
         // vezes: 0,22 por face resulta em ~0,39 percebidos, perto dos 0,35 pedidos.
         material.blending = .transparent(opacity: .init(floatLiteral: Self.wallOpacityPerFace))
         return material
     }
 
-    /// Azul-ardósia escuro: contrasta com quase qualquer cômodo real sem virar
-    /// preto chapado, e mantém o ambiente legível por trás.
-    private static let wallTint = UIColor(red: 0.10, green: 0.14, blue: 0.22, alpha: 1)
+    /// Azul profundo, bem saturado: contrasta com paredes brancas — que é o
+    /// cômodo típico — sem virar preto chapado.
+    private static let wallTint = UIColor(red: 0.05, green: 0.16, blue: 0.48, alpha: 1)
 
     /// Opacidade **por face**. A malha é de dupla face, então o alfa compõe duas
-    /// vezes: 0,26 por face resulta em ~0,45 percebido. Este é o número a mexer
+    /// vezes: 0,32 por face resulta em ~0,54 percebido. Este é o número a mexer
     /// se as paredes ficarem escuras ou claras demais no vídeo.
-    private static let wallOpacityPerFace: Float = 0.26
+    private static let wallOpacityPerFace: Float = 0.32
 
     /// Parede selecionada para receber uma abertura.
-    private static func highlightMaterial() -> PhysicallyBasedMaterial {
-        var material = PhysicallyBasedMaterial()
-        material.baseColor = .init(tint: UIColor.systemYellow)
-        material.roughness = 0.85
-        material.metallic = 0.0
-        material.blending = .transparent(opacity: .init(floatLiteral: 0.35))
+    private static func highlightMaterial() -> UnlitMaterial {
+        var material = UnlitMaterial(color: UIColor.systemYellow)
+        material.blending = .transparent(opacity: .init(floatLiteral: 0.42))
         return material
     }
 
@@ -338,6 +342,105 @@ final class RoomSceneRenderer {
         container.addChild(makeTextModel(Format.meters(length), color: Self.elasticColor(isStale: isStale)))
     }
 
+    // MARK: - Prévia do vão em construção
+
+    /// Retângulo do vão sendo marcado, com largura e altura rotuladas.
+    ///
+    /// Mesmo papel da linha elástica na marcação de cantos: mostrar a medida
+    /// **antes** de confirmar. Sem isso o usuário só descobre o tamanho do vão
+    /// depois de adicioná-lo.
+    func updateOpeningPreview(
+        wallStart: SIMD3<Float>,
+        wallEnd: SIMD3<Float>,
+        fromDistance: Float,
+        toDistance: Float,
+        sill: Float,
+        top: Float,
+        color: UIColor
+    ) {
+        let left = min(fromDistance, toDistance)
+        let right = max(fromDistance, toDistance)
+        let width = right - left
+        let height = max(top - sill, 0)
+
+        func corner(_ distance: Float, _ elevation: Float) -> SIMD3<Float> {
+            WallGeometry.point(onWallFrom: wallStart, to: wallEnd, distance: distance, height: elevation)
+        }
+
+        let outline = [
+            corner(left, sill), corner(right, sill),
+            corner(right, top), corner(left, top),
+        ]
+
+        if previewLines.isEmpty {
+            for _ in 0..<4 {
+                let line = ModelEntity(mesh: unitLineMesh, materials: [Self.material(color)])
+                root.addChild(line)
+                previewLines.append(line)
+            }
+        }
+        for index in previewLines.indices {
+            previewLines[index].isEnabled = true
+            previewLines[index].model?.materials = [Self.material(color)]
+            Self.placeInSpace(previewLines[index], from: outline[index], to: outline[(index + 1) % 4])
+        }
+
+        // Largura embaixo, altura na lateral — as duas cotas que o usuário
+        // está de fato ajustando.
+        placePreviewLabel(
+            &previewWidthLabel,
+            text: Format.meters(width),
+            at: corner((left + right) / 2, sill) + SIMD3<Float>(0, -Self.labelLift, 0),
+            color: color,
+            cache: &previewWidthCentimeters,
+            value: width
+        )
+        placePreviewLabel(
+            &previewHeightLabel,
+            text: Format.meters(height),
+            at: corner(right, (sill + top) / 2),
+            color: color,
+            cache: &previewHeightCentimeters,
+            value: height
+        )
+    }
+
+    func hideOpeningPreview() {
+        for line in previewLines { line.isEnabled = false }
+        previewWidthLabel?.isEnabled = false
+        previewHeightLabel?.isEnabled = false
+    }
+
+    private func placePreviewLabel(
+        _ container: inout Entity?,
+        text: String,
+        at position: SIMD3<Float>,
+        color: UIColor,
+        cache: inout Int?,
+        value: Float
+    ) {
+        let entity: Entity
+        if let container {
+            entity = container
+        } else {
+            let created = Entity()
+            root.addChild(created)
+            container = created
+            entity = created
+        }
+        entity.isEnabled = true
+        entity.position = position
+
+        // Mesma economia da linha elástica: regenerar malha de texto é caro,
+        // e o valor só muda de verdade na casa do centímetro.
+        let centimeters = Int((value * 100).rounded())
+        guard centimeters != cache else { return }
+        cache = centimeters
+
+        while let child = entity.children.first { child.removeFromParent() }
+        entity.addChild(makeTextModel(text, color: color))
+    }
+
     // MARK: - Orientação dos rótulos
 
     /// Gira os rótulos para encarar a câmera, em torno de Y.
@@ -350,6 +453,9 @@ final class RoomSceneRenderer {
         }
         if let elasticLabelNode, elasticLabelNode.isEnabled {
             Self.yaw(elasticLabelNode, toward: cameraPosition)
+        }
+        for label in [previewWidthLabel, previewHeightLabel] {
+            if let label, label.isEnabled { Self.yaw(label, toward: cameraPosition) }
         }
     }
 
@@ -367,6 +473,15 @@ final class RoomSceneRenderer {
         elasticLabelNode = nil
         elasticLabelCentimeters = nil
         elasticIsStale = nil
+
+        for line in previewLines { line.removeFromParent() }
+        previewLines.removeAll()
+        previewWidthLabel?.removeFromParent()
+        previewWidthLabel = nil
+        previewHeightLabel?.removeFromParent()
+        previewHeightLabel = nil
+        previewWidthCentimeters = nil
+        previewHeightCentimeters = nil
     }
 
     // MARK: - Fábricas

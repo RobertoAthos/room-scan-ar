@@ -144,8 +144,13 @@ struct FloorPlanView: View {
         )
     }
 
-    /// Porta de correr: folha deslocada para dentro, paralela à parede, com a
-    /// seta indicando o sentido de deslizamento.
+    /// Porta de correr: a folha desenhada como painel fino paralelo à parede,
+    /// deslocado para o lado por onde ela corre.
+    ///
+    /// **Sem seta.** A convenção arquitetônica representa a porta de correr pelo
+    /// painel em si, não por indicação de movimento. Vãos largos ganham duas
+    /// folhas de meia largura, ligeiramente deslocadas uma da outra — que é como
+    /// se desenha uma porta de correr de duas folhas.
     private func drawSlidingDoor(
         in context: inout GraphicsContext,
         from a: CGPoint,
@@ -155,31 +160,40 @@ struct FloorPlanView: View {
         let width = hypot(b.x - a.x, b.y - a.y)
         guard width > 0.5 else { return }
 
-        let offset = wallWidth * 0.9
-        let leafA = CGPoint(x: a.x + inwardNormal.dx * offset, y: a.y + inwardNormal.dy * offset)
-        let leafB = CGPoint(x: b.x + inwardNormal.dx * offset, y: b.y + inwardNormal.dy * offset)
-
-        var leaf = Path()
-        leaf.move(to: leafA)
-        leaf.addLine(to: leafB)
-        context.stroke(leaf, with: .color(.black), style: StrokeStyle(lineWidth: 3, lineCap: .butt))
-
-        // Seta ao longo da folha, do batente para o vão.
         let direction = CGVector(dx: (b.x - a.x) / width, dy: (b.y - a.y) / width)
-        let headBase = CGPoint(
-            x: leafB.x - direction.dx * width * 0.28,
-            y: leafB.y - direction.dy * width * 0.28
-        )
-        let wing = CGVector(dx: -direction.dy, dy: direction.dx)
-        let wingLength = min(width * 0.12, 6)
+        let leafThickness = wallWidth * 0.42
 
-        var arrow = Path()
-        arrow.move(to: leafB)
-        arrow.addLine(to: CGPoint(x: headBase.x + wing.dx * wingLength, y: headBase.y + wing.dy * wingLength))
-        arrow.move(to: leafB)
-        arrow.addLine(to: CGPoint(x: headBase.x - wing.dx * wingLength, y: headBase.y - wing.dy * wingLength))
-        context.stroke(arrow, with: .color(.black.opacity(0.7)), style: StrokeStyle(lineWidth: 1.2))
+        /// Painel entre duas frações do vão, deslocado da linha da parede.
+        func panel(from startFraction: CGFloat, to endFraction: CGFloat, offset: CGFloat) {
+            let p1 = CGPoint(
+                x: a.x + direction.dx * width * startFraction + inwardNormal.dx * offset,
+                y: a.y + direction.dy * width * startFraction + inwardNormal.dy * offset
+            )
+            let p2 = CGPoint(
+                x: a.x + direction.dx * width * endFraction + inwardNormal.dx * offset,
+                y: a.y + direction.dy * width * endFraction + inwardNormal.dy * offset
+            )
+            var path = Path()
+            path.move(to: p1)
+            path.addLine(to: p2)
+            context.stroke(
+                path,
+                with: .color(.black),
+                style: StrokeStyle(lineWidth: leafThickness, lineCap: .butt)
+            )
+        }
+
+        if width >= twoLeafScreenWidth {
+            // Duas folhas: cada uma cobre metade do vão, em planos distintos.
+            panel(from: 0, to: 0.52, offset: leafThickness * 0.6)
+            panel(from: 0.48, to: 1, offset: leafThickness * 1.7)
+        } else {
+            panel(from: 0, to: 1, offset: leafThickness * 1.1)
+        }
     }
+
+    /// Acima desta largura em tela o vão é desenhado com duas folhas.
+    private var twoLeafScreenWidth: CGFloat { 46 }
 
     /// Janela: linha dupla fina atravessando o vão.
     private func drawWindow(in context: inout GraphicsContext, from a: CGPoint, to b: CGPoint) {
@@ -234,23 +248,43 @@ struct FloorPlanView: View {
         }
     }
 
+    /// Rótulo de área no centroide — mas só se couber dentro do cômodo.
+    ///
+    /// O fundo branco do rótulo apaga o que estiver embaixo. Num cômodo estreito
+    /// o texto extrapola as paredes, e o fundo abria buracos no traço. Em vez de
+    /// remover o fundo (que é o que mantém rótulos legíveis quando se cruzam),
+    /// o rótulo sai do desenho quando não cabe — que é o que se faz numa planta
+    /// real para ambientes pequenos.
+    ///
+    /// O perímetro saiu do desenho de vez: já aparece no painel de medidas e no
+    /// cabeçalho do PDF, e no centro só disputava espaço com a área.
     private func drawAreaLabel(in context: inout GraphicsContext, transform: PlanTransform) {
         guard scan.corners.count >= 3 else { return }
-        let center = transform.point(scan.centroidXZ)
 
-        drawLabel(
-            in: &context,
-            text: Format.squareMeters(scan.floorArea),
-            at: center,
-            font: .system(size: 19, weight: .semibold)
-        )
-        drawLabel(
-            in: &context,
-            text: "perímetro \(Format.meters(scan.perimeter))",
-            at: CGPoint(x: center.x, y: center.y + 21),
-            font: .system(size: 11),
-            color: .black.opacity(0.7)
-        )
+        let font = Font.system(size: 19, weight: .semibold)
+        let text = Format.squareMeters(scan.floorArea)
+        let resolved = context.resolve(Text(text).font(font).foregroundStyle(Color.black))
+        let size = resolved.measure(in: CGSize(width: 400, height: 100))
+
+        let center = transform.point(scan.centroidXZ)
+        let padding: CGFloat = 4
+        let halfWidth = size.width / 2 + padding
+        let halfHeight = size.height / 2 + padding
+
+        // O retângulo do rótulo cabe dentro do polígono, longe do traço da parede?
+        let clearance = wallWidth / 2 + 2
+        let fits = [
+            CGPoint(x: center.x - halfWidth - clearance, y: center.y - halfHeight - clearance),
+            CGPoint(x: center.x + halfWidth + clearance, y: center.y - halfHeight - clearance),
+            CGPoint(x: center.x + halfWidth + clearance, y: center.y + halfHeight + clearance),
+            CGPoint(x: center.x - halfWidth - clearance, y: center.y + halfHeight + clearance),
+        ].allSatisfy { transform.containsScreenPoint($0, in: scan) }
+
+        let anchor = fits
+            ? center
+            : CGPoint(x: transform.drawingBounds.midX, y: transform.drawingBounds.minY - halfHeight - 26)
+
+        drawLabel(in: &context, text: text, at: anchor, font: font)
     }
 
     /// Desenha texto sobre um retângulo branco opaco.
@@ -361,6 +395,29 @@ struct PlanTransform {
         let c = cos(angle)
         let s = sin(angle)
         return SIMD2<Float>(point.x * c - point.y * s, point.x * s + point.y * c)
+    }
+
+    /// Retângulo ocupado pelo desenho na viewport.
+    var drawingBounds: CGRect {
+        let minimum = polygon.reduce(polygon[0]) { SIMD2(min($0.x, $1.x), min($0.y, $1.y)) }
+        let maximum = polygon.reduce(polygon[0]) { SIMD2(max($0.x, $1.x), max($0.y, $1.y)) }
+        return CGRect(
+            x: offset.x,
+            y: offset.y,
+            width: CGFloat(maximum.x - minimum.x) * scale,
+            height: CGFloat(maximum.y - minimum.y) * scale
+        )
+    }
+
+    /// Se um ponto **de tela** cai dentro do cômodo. Converte de volta para o
+    /// plano girado e reusa o mesmo teste de contenção das cotas.
+    func containsScreenPoint(_ point: CGPoint, in scan: RoomScan) -> Bool {
+        guard scale > 0 else { return false }
+        let planar = SIMD2<Float>(
+            Float((point.x - offset.x) / scale) + origin.x,
+            Float((point.y - offset.y) / scale) + origin.y
+        )
+        return PolygonMath.contains(planar, polygon: polygon)
     }
 
     func point(_ corner: SIMD3<Float>) -> CGPoint { point(corner.xz) }
