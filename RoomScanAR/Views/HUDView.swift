@@ -473,10 +473,19 @@ struct HUDView: View {
                     .foregroundStyle(.white.opacity(0.8))
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else if manager.draftWidth == nil {
+                Text(
+                    manager.draftFirstPoint == nil
+                        ? "Mire num canto do vão — pode ser em qualquer altura."
+                        : "Agora mire no canto oposto, na diagonal."
+                )
+                .font(.footnote)
+                .foregroundStyle(.white.opacity(0.8))
+                .frame(maxWidth: .infinity, alignment: .leading)
+
                 Button {
                     manager.markOpeningPoint()
                 } label: {
-                    Text(manager.draftStart == nil ? "Marcar início do vão" : "Marcar fim do vão")
+                    Text(manager.draftFirstPoint == nil ? "Marcar canto do vão" : "Marcar canto oposto")
                         .font(.headline)
                         .frame(maxWidth: .infinity)
                 }
@@ -527,7 +536,7 @@ struct HUDView: View {
             .pickerStyle(.segmented)
 
             HStack {
-                Text("Largura \(Format.meters(manager.draftWidth ?? 0))")
+                Text("Largura \(Format.meters(manager.draftWidth ?? 0)) · medida")
                     .font(.footnote.monospacedDigit())
                     .foregroundStyle(.white.opacity(0.85))
                 Spacer()

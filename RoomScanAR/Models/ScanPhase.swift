@@ -20,7 +20,7 @@ extension ScanPhase {
         case .detectingFloor:  "Aponte para o chão e mova o celular devagar"
         case .markingCorners:  "Mire no encontro entre parede e piso e toque em Marcar canto"
         case .measuringHeight: "Mire no encontro entre parede e teto"
-        case .markingOpenings: "Toque numa parede para adicionar porta ou janela"
+        case .markingOpenings: "Toque numa parede, depois marque dois cantos opostos do vão"
         case .results:         "Digitalização concluída"
         }
     }

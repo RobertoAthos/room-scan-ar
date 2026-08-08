@@ -513,7 +513,7 @@ final class RoomSceneRenderer {
 
     /// Cor da moldura por tipo de abertura. Contra a parede escura, cores
     /// saturadas distinguem os tipos de relance em vídeo.
-    private static func frameColor(for type: OpeningType) -> UIColor {
+    static func frameColor(for type: OpeningType) -> UIColor {
         switch type {
         case .door:        .systemOrange
         case .slidingDoor: .systemPurple

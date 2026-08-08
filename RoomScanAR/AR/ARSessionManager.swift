@@ -62,6 +62,9 @@ final class ARSessionManager: NSObject, ObservableObject {
 
     // Rascunho da abertura em construção.
     @Published private(set) var selectedWallIndex: Int?
+    /// Primeiro canto marcado do vão: distância ao longo da parede em `x`,
+    /// altura acima do piso em `y`.
+    @Published private(set) var draftFirstPoint: SIMD2<Float>?
     @Published private(set) var draftStart: Float?
     @Published private(set) var draftWidth: Float?
     @Published private(set) var draftType: OpeningType = .door
@@ -126,8 +129,12 @@ final class ARSessionManager: NSObject, ObservableObject {
     static let minCeilingHeight: Float = 1.8
     static let maxCeilingHeight: Float = 6.0
 
-    /// Largura mínima de um vão.
+    /// Dimensões mínimas de um vão.
     private static let minOpeningWidth: Float = 0.30
+    private static let minOpeningHeight: Float = 0.30
+
+    /// Folga nas bordas da parede ao mirar o plano vertical dela.
+    private static let wallAimTolerance: Float = 0.20
 
     /// Planos horizontais observados até agora, por identificador de âncora.
     private var planeSamples: [UUID: PlaneSample] = [:]
@@ -277,7 +284,7 @@ final class ARSessionManager: NSObject, ObservableObject {
         case .measuringHeight:
             true
         case .markingOpenings:
-            selectedWallIndex != nil || draftStart != nil || !scan.openings.isEmpty
+            selectedWallIndex != nil || draftFirstPoint != nil || !scan.openings.isEmpty
         case .detectingFloor, .results:
             false
         }
@@ -522,45 +529,91 @@ final class ARSessionManager: NSObject, ObservableObject {
         selectedWallIndex != nil && draftStart != nil && draftWidth != nil
     }
 
-    /// Marca uma das duas extremidades do vão, projetando o ponto da mira sobre
-    /// a parede selecionada.
+    /// Marca um dos dois cantos opostos do vão, no plano da parede.
+    ///
+    /// Os dois pontos definem o retângulo inteiro — largura, peitoril e altura —
+    /// do mesmo jeito que os cantos definem o polígono do cômodo.
+    ///
+    /// **Diverge da especificação**, que pede dois pontos "ao longo da base" da
+    /// parede. Marcar na base descarta a altura por construção: ela teria que vir
+    /// de um valor padrão, e o retângulo cresce só na horizontal — o que produz
+    /// proporções que não correspondem à abertura real.
     func markOpeningPoint() {
-        guard phase == .markingOpenings,
-              let index = selectedWallIndex,
-              let wall = scan.wall(at: index),
-              let hit = reticleWorldPoint,
-              let local = toAnchorSpace(hit),
-              let distance = WallGeometry.project(local, onto: wall.start, wall.end) else { return }
+        guard phase == .markingOpenings, let aim = currentWallAim else { return }
 
-        let wallLength = WallGeometry.length(from: wall.start, to: wall.end)
-        let clamped = min(max(distance, 0), wallLength)
-
-        guard let start = draftStart else {
-            draftStart = clamped
+        guard let first = draftFirstPoint else {
+            draftFirstPoint = aim
             setStatus(nil)
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             return
         }
 
-        let width = abs(clamped - start)
+        let width = abs(aim.x - first.x)
+        let height = abs(aim.y - first.y)
+
         guard width >= Self.minOpeningWidth else {
-            setStatus("Vão muito estreito — marque os dois pontos mais afastados")
+            setStatus("Vão muito estreito — afaste o segundo canto na horizontal")
+            return
+        }
+        guard height >= Self.minOpeningHeight else {
+            setStatus("Vão muito baixo — marque o segundo canto mais alto")
             return
         }
 
-        draftStart = min(start, clamped)
+        draftStart = min(first.x, aim.x)
         draftWidth = width
+        draftSill = min(first.y, aim.y)
+        draftHeight = height
         // Sugere o tipo pela largura: acima de 1,20 m uma folha de giro deixa de
         // fazer sentido, e o padrão vira porta de correr. Continua editável.
-        setDraftType(OpeningType.suggested(forWidth: width))
+        draftType = OpeningType.suggested(forWidth: width)
         setStatus(nil)
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
     }
 
+    /// Troca só o tipo.
+    ///
+    /// Não mexe nas dimensões: elas vieram dos dois cantos marcados, e
+    /// sobrescrevê-las com o padrão do tipo jogaria fora a medição do usuário.
     func setDraftType(_ type: OpeningType) {
         draftType = type
-        draftHeight = type.defaultHeight
-        draftSill = type.defaultSillHeight
+    }
+
+    /// Ponto mirado no plano vertical da parede selecionada: distância ao longo
+    /// da parede em `x`, altura acima do piso em `y`.
+    ///
+    /// Não é `@Published` — muda a cada frame e só interessa à camada 3D.
+    private(set) var currentWallAim: SIMD2<Float>?
+
+    private func wallAim(in arView: ARView) -> SIMD2<Float>? {
+        guard let index = selectedWallIndex,
+              let wall = scan.wall(at: index),
+              let ray = raycastService.cameraRay(in: arView),
+              let origin = toAnchorSpace(ray.origin),
+              let direction = directionToAnchorSpace(ray.direction),
+              let hit = WallGeometry.intersectVerticalPlane(
+                  rayOrigin: origin,
+                  rayDirection: direction,
+                  wallStart: wall.start,
+                  wallEnd: wall.end
+              ),
+              let distance = WallGeometry.project(hit.point, onto: wall.start, wall.end)
+        else { return nil }
+
+        // O plano é infinito, a parede não. Uma folga nas quinas permite mirar o
+        // canto exato sem perder o alvo, mas sem aceitar um acerto do outro lado.
+        let wallLength = WallGeometry.length(from: wall.start, to: wall.end)
+        guard distance >= -Self.wallAimTolerance,
+              distance <= wallLength + Self.wallAimTolerance else { return nil }
+
+        let height = hit.point.y - scan.floorY
+        guard height >= -Self.wallAimTolerance,
+              height <= scan.ceilingHeight + Self.wallAimTolerance else { return nil }
+
+        return SIMD2<Float>(
+            min(max(distance, 0), wallLength),
+            min(max(height, 0), scan.ceilingHeight)
+        )
     }
 
     func confirmOpening() {
@@ -584,9 +637,13 @@ final class ARSessionManager: NSObject, ObservableObject {
     }
 
     func clearOpeningDraft() {
+        draftFirstPoint = nil
         draftStart = nil
         draftWidth = nil
         selectedWallIndex = nil
+        draftType = .door
+        draftHeight = OpeningType.door.defaultHeight
+        draftSill = OpeningType.door.defaultSillHeight
         setStatus(nil)
         rebuildWalls()
     }
@@ -608,7 +665,7 @@ final class ARSessionManager: NSObject, ObservableObject {
     func undo() {
         switch phase {
         case .markingOpenings:
-            if selectedWallIndex != nil || draftStart != nil {
+            if selectedWallIndex != nil || draftFirstPoint != nil {
                 clearOpeningDraft()
             } else if !scan.openings.isEmpty {
                 scan.openings.removeLast()
@@ -718,10 +775,18 @@ final class ARSessionManager: NSObject, ObservableObject {
             // A mira passa a refletir se existe parede sob o alvo — senão ficaria
             // branca o tempo todo, sem informar nada.
             reticleWorldPoint = nil
+            currentWallAim = nil
             newState = ceilingAimState(in: arView)
+        } else if phase == .markingOpenings, selectedWallIndex != nil {
+            // Com a parede escolhida, a mira deixa o piso e passa a percorrer o
+            // plano dela: é o que permite marcar altura e largura no mesmo gesto.
+            reticleWorldPoint = nil
+            currentWallAim = wallAim(in: arView)
+            newState = currentWallAim == nil ? .searching : .valid
         } else {
             let hit = raycastService.floorHit(in: arView, lockedFloorY: isFloorLocked ? worldFloorY : nil)
             reticleWorldPoint = hit?.position
+            currentWallAim = nil
             newState =
                 switch hit {
                 case .none: .searching
@@ -771,37 +836,39 @@ final class ARSessionManager: NSObject, ObservableObject {
 
     /// Retângulo do vão em construção, atualizado a cada frame.
     ///
-    /// Antes do segundo ponto o lado direito acompanha a mira; depois dele fica
-    /// fixo, para que os steppers de altura e peitoril mostrem o efeito ao vivo.
+    /// Antes do segundo canto o retângulo acompanha a mira nas duas dimensões;
+    /// depois dele passa a refletir os steppers, para que altura e peitoril
+    /// mostrem o efeito ao vivo.
     private func updateOpeningPreview() {
         guard phase == .markingOpenings,
               let index = selectedWallIndex,
-              let wall = scan.wall(at: index),
-              let start = draftStart else {
+              let wall = scan.wall(at: index) else {
             renderer?.hideOpeningPreview()
             return
         }
 
-        let end: Float
-        if let width = draftWidth {
-            end = start + width
-        } else if let hit = reticleWorldPoint,
-                  let local = toAnchorSpace(hit),
-                  let distance = WallGeometry.project(local, onto: wall.start, wall.end) {
-            let wallLength = WallGeometry.length(from: wall.start, to: wall.end)
-            end = min(max(distance, 0), wallLength)
+        let cornerA: SIMD2<Float>
+        let cornerB: SIMD2<Float>
+
+        if let start = draftStart, let width = draftWidth {
+            cornerA = SIMD2<Float>(start, draftSill)
+            cornerB = SIMD2<Float>(start + width, min(draftSill + draftHeight, scan.ceilingHeight))
+        } else if let first = draftFirstPoint {
+            cornerA = first
+            cornerB = currentWallAim ?? first
         } else {
-            end = start
+            renderer?.hideOpeningPreview()
+            return
         }
 
         renderer?.updateOpeningPreview(
             wallStart: wall.start,
             wallEnd: wall.end,
-            fromDistance: start,
-            toDistance: end,
-            sill: draftSill,
-            top: min(draftSill + draftHeight, scan.ceilingHeight),
-            color: draftType == .window ? .systemTeal : .systemOrange
+            fromDistance: cornerA.x,
+            toDistance: cornerB.x,
+            sill: min(cornerA.y, cornerB.y),
+            top: max(cornerA.y, cornerB.y),
+            color: RoomSceneRenderer.frameColor(for: draftType)
         )
     }
 
