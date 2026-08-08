@@ -368,6 +368,23 @@ struct HUDView: View {
             .tint(.yellow)
             .disabled(manager.reticleState == .searching)
 
+            ceilingScanSection
+
+            if let detected = manager.detectedCeilingHeight {
+                Button {
+                    manager.setCeilingHeight(detected)
+                } label: {
+                    Label(
+                        "Teto detectado: \(Format.meters(detected))",
+                        systemImage: "square.3.layers.3d.top.filled"
+                    )
+                    .font(.footnote.weight(.medium))
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(.green)
+            }
+
             // Teto inclinado não tem um pé-direito único. Medir vários pontos e
             // escolher entre mínimo, média e máximo é o que torna a fase
             // utilizável fora de um cômodo de laje.
@@ -411,6 +428,63 @@ struct HUDView: View {
         }
         .padding(14)
         .background(.black.opacity(0.6), in: .rect(cornerRadius: 16))
+    }
+
+    /// Varredura do teto pela nuvem de feature points do ARKit.
+    ///
+    /// Complementa a medição ponto a ponto: em vez de mirar quinas, o usuário
+    /// varre o cômodo e a distribuição de alturas descreve o teto inteiro. Só
+    /// funciona onde há textura — teto branco liso não gera feature point.
+    @ViewBuilder
+    private var ceilingScanSection: some View {
+        VStack(spacing: 8) {
+            Button {
+                manager.toggleCeilingScan()
+            } label: {
+                Label(
+                    manager.isScanningCeiling ? "Parar varredura" : "Escanear teto movendo o celular",
+                    systemImage: manager.isScanningCeiling ? "stop.circle.fill" : "dot.viewfinder"
+                )
+                .font(.subheadline.weight(.medium))
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .tint(manager.isScanningCeiling ? .red : .white)
+
+            if manager.isScanningCeiling {
+                HStack(spacing: 8) {
+                    ProgressView().tint(.white).controlSize(.small)
+                    Text(scanProgressText)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.85))
+                    Spacer()
+                }
+            }
+
+            if let scan = manager.ceilingScan {
+                HStack(spacing: 8) {
+                    ceilingOption("Mais baixo", scan.low)
+                    ceilingOption("Mediana", scan.median)
+                    ceilingOption("Mais alto", scan.high)
+                }
+
+                if scan.spread >= 0.30 {
+                    Text("Teto irregular — variação de \(Format.meters(scan.spread)) entre as pontas.")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+        .padding(10)
+        .background(.white.opacity(0.10), in: .rect(cornerRadius: 12))
+    }
+
+    private var scanProgressText: String {
+        guard let scan = manager.ceilingScan else {
+            return "Aponte para o teto e varra o cômodo devagar…"
+        }
+        return "\(scan.sampleCount) pontos de teto"
     }
 
     /// Escolha entre as medições acumuladas, para tetos que não são planos.

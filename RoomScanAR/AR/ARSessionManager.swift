@@ -25,6 +25,7 @@ private struct PlaneSample: Sendable, Equatable {
     let y: Float
     let area: Float
     let isClassifiedFloor: Bool
+    let isClassifiedCeiling: Bool
 }
 
 /// Candidato a piso, exposto ao HUD antes da confirmação do usuário.
@@ -59,6 +60,15 @@ final class ARSessionManager: NSObject, ObservableObject {
 
     /// Medições de pé-direito acumuladas nesta sessão.
     @Published private(set) var ceilingSamples: [Float] = []
+
+    /// Varredura do teto pela nuvem de feature points.
+    @Published private(set) var isScanningCeiling = false
+    @Published private(set) var ceilingScan: CeilingEstimator.Summary?
+
+    /// Teto detectado como plano horizontal pelo ARKit. É o sinal mais
+    /// confiável quando existe, mas depende de o teto ter textura suficiente
+    /// para o ARKit consolidar um plano.
+    @Published private(set) var detectedCeilingHeight: Float?
 
     // Rascunho da abertura em construção.
     @Published private(set) var selectedWallIndex: Int?
@@ -136,8 +146,20 @@ final class ARSessionManager: NSObject, ObservableObject {
     /// Folga nas bordas da parede ao mirar o plano vertical dela.
     private static let wallAimTolerance: Float = 0.20
 
+    /// Distância mínima das paredes para um feature point contar como teto.
+    private static let ceilingWallMargin: Float = 0.35
+
+    /// A nuvem é lida a cada N frames. Ler a 60 Hz não acrescenta pontos novos
+    /// na mesma proporção — os feature points persistem entre frames.
+    private static let ceilingScanFrameInterval = 5
+
     /// Planos horizontais observados até agora, por identificador de âncora.
     private var planeSamples: [UUID: PlaneSample] = [:]
+
+    /// Feature points já contabilizados na varredura do teto.
+    private var seenFeaturePointIDs: Set<UInt64> = []
+    private var ceilingScanHeights: [Float] = []
+    private var framesSinceCeilingScan = 0
     private var latestCameraPosition: SIMD3<Float>?
 
     /// Área mínima para considerar um plano como piso.
@@ -186,6 +208,8 @@ final class ARSessionManager: NSObject, ObservableObject {
         draftStart = nil
         draftWidth = nil
         ceilingSamples.removeAll()
+        clearCeilingScan()
+        detectedCeilingHeight = nil
         setDraftType(.door)
         reticleState = .searching
         statusMessage = nil
@@ -481,8 +505,86 @@ final class ARSessionManager: NSObject, ObservableObject {
         setStatus(nil)
     }
 
+    // MARK: - Varredura do teto
+
+    func toggleCeilingScan() {
+        if isScanningCeiling {
+            isScanningCeiling = false
+            return
+        }
+        seenFeaturePointIDs.removeAll(keepingCapacity: true)
+        ceilingScanHeights.removeAll(keepingCapacity: true)
+        ceilingScan = nil
+        framesSinceCeilingScan = 0
+        isScanningCeiling = true
+        setStatus(nil)
+    }
+
+    func clearCeilingScan() {
+        isScanningCeiling = false
+        seenFeaturePointIDs.removeAll()
+        ceilingScanHeights.removeAll()
+        ceilingScan = nil
+    }
+
+    /// Acumula pontos da nuvem esparsa que possam pertencer ao teto.
+    ///
+    /// A deduplicação por identificador é o que torna a estatística honesta:
+    /// cada feature point tem id estável entre frames, e sem ela ficar parado
+    /// apontando para um canto multiplicaria o peso daquele trecho do teto.
+    private func ingestCeilingPoints(in arView: ARView) {
+        framesSinceCeilingScan += 1
+        guard framesSinceCeilingScan >= Self.ceilingScanFrameInterval else { return }
+        framesSinceCeilingScan = 0
+
+        guard scan.corners.count >= 3,
+              let cloud = arView.session.currentFrame?.rawFeaturePoints else { return }
+
+        let polygon = scan.corners.map(\.xz)
+        var fresh: [SIMD3<Float>] = []
+        fresh.reserveCapacity(cloud.points.count)
+
+        for (index, identifier) in cloud.identifiers.enumerated() where index < cloud.points.count {
+            guard seenFeaturePointIDs.insert(identifier).inserted else { continue }
+            guard let local = toAnchorSpace(cloud.points[index]) else { continue }
+            fresh.append(local)
+        }
+        guard !fresh.isEmpty else { return }
+
+        ceilingScanHeights.append(
+            contentsOf: CeilingEstimator.ceilingHeights(
+                from: fresh,
+                floorY: scan.floorY,
+                polygon: polygon,
+                minimumHeight: Self.minCeilingHeight,
+                maximumHeight: Self.maxCeilingHeight,
+                wallMargin: Self.ceilingWallMargin
+            )
+        )
+
+        let summary = CeilingEstimator.summarize(ceilingScanHeights)
+        if summary != ceilingScan { ceilingScan = summary }
+    }
+
+    /// Maior plano horizontal detectado acima do piso, dentro da faixa plausível.
+    private func recomputeCeilingPlane() {
+        guard let worldFloorY else { return }
+
+        let candidates = planeSamples.values.compactMap { sample -> Float? in
+            let height = sample.y - worldFloorY
+            guard height >= Self.minCeilingHeight, height <= Self.maxCeilingHeight else { return nil }
+            // Classificado como teto, ou grande o suficiente para não ser móvel.
+            guard sample.isClassifiedCeiling || sample.area >= Self.minFloorArea else { return nil }
+            return height
+        }
+
+        let best = candidates.max()
+        if best != detectedCeilingHeight { detectedCeilingHeight = best }
+    }
+
     func confirmCeilingHeight() {
         guard phase == .measuringHeight else { return }
+        isScanningCeiling = false
         // As paredes podem não ter sido levantadas antes; garante que existam
         // para que a seleção por toque tenha o que destacar.
         if !wallsBuilt { buildWalls() }
@@ -777,6 +879,7 @@ final class ARSessionManager: NSObject, ObservableObject {
             reticleWorldPoint = nil
             currentWallAim = nil
             newState = ceilingAimState(in: arView)
+            if isScanningCeiling { ingestCeilingPoints(in: arView) }
         } else if phase == .markingOpenings, selectedWallIndex != nil {
             // Com a parede escolhida, a mira deixa o piso e passa a percorrer o
             // plano dela: é o que permite marcar altura e largura no mesmo gesto.
@@ -875,6 +978,7 @@ final class ARSessionManager: NSObject, ObservableObject {
     fileprivate func ingest(planes: [PlaneSample]) {
         for sample in planes { planeSamples[sample.anchorID] = sample }
         if phase == .detectingFloor { recomputeFloorCandidate() }
+        if isFloorLocked { recomputeCeilingPlane() }
     }
 
     fileprivate func forget(anchorIDs: [UUID]) {
@@ -961,14 +1065,20 @@ extension ARSessionManager: ARSessionDelegate {
         anchors.compactMap { anchor in
             guard let plane = anchor as? ARPlaneAnchor, plane.alignment == .horizontal else { return nil }
             let extent = plane.planeExtent
-            let isFloor = ARPlaneAnchor.isClassificationSupported && plane.classification == .floor
+            let classificationWorks = ARPlaneAnchor.isClassificationSupported
+            let isFloor = classificationWorks && plane.classification == .floor
+            // Plano horizontal voltado para baixo. O ARKit detecta teto com
+            // `.horizontal` — não é preciso ligar detecção vertical nem nada
+            // que dependa de LiDAR.
+            let isCeiling = classificationWorks && plane.classification == .ceiling
             return PlaneSample(
                 anchorID: plane.identifier,
                 // O centro do plano em coordenadas de mundo: a translação da âncora
                 // mais o offset do centro local.
                 y: plane.transform.columns.3.y + plane.center.y,
                 area: extent.width * extent.height,
-                isClassifiedFloor: isFloor
+                isClassifiedFloor: isFloor,
+                isClassifiedCeiling: isCeiling
             )
         }
     }

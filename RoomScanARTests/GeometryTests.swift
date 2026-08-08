@@ -528,6 +528,143 @@ struct WallGeometryTests {
     }
 }
 
+@Suite("Distância até a parede")
+struct DistanceToBoundaryTests {
+
+    private let square = [p(0, 0), p(4, 0), p(4, 3), p(0, 3)]
+
+    @Test("Do centro até a parede mais próxima")
+    func center() {
+        // Cômodo 4×3: do centro, a parede mais perto está a 1,5 m.
+        expectClose(PolygonMath.distanceToBoundary(p(2, 1.5), polygon: square), 1.5)
+    }
+
+    @Test("Perto de uma parede")
+    func nearWall() {
+        expectClose(PolygonMath.distanceToBoundary(p(2, 0.2), polygon: square), 0.2)
+        expectClose(PolygonMath.distanceToBoundary(p(3.9, 1.5), polygon: square), 0.1)
+    }
+
+    @Test("Sobre um canto a distância é zero")
+    func onCorner() {
+        expectClose(PolygonMath.distanceToBoundary(p(0, 0), polygon: square), 0)
+    }
+
+    @Test("Fora do polígono a distância continua sendo até a aresta")
+    func outside() {
+        // A função não distingue dentro de fora — quem faz isso é `contains`.
+        expectClose(PolygonMath.distanceToBoundary(p(-1, 1.5), polygon: square), 1.0)
+    }
+
+    @Test("Projeção presa ao trecho do segmento, não à reta infinita")
+    func clampedToSegment() {
+        // Alinhado com a parede de baixo, mas além do canto: a distância tem que
+        // ser até o canto, não os 0,5 m perpendiculares até a reta.
+        let distance = PolygonMath.distanceToBoundary(p(-3, -0.5), polygon: square)
+        expectClose(distance, sqrt(9 + 0.25))
+    }
+}
+
+@Suite("Estimativa de teto")
+struct CeilingEstimatorTests {
+
+    private let room = [p(0, 0), p(4, 0), p(4, 3), p(0, 3)]
+
+    private func point(_ x: Float, _ y: Float, _ z: Float) -> SIMD3<Float> {
+        SIMD3<Float>(x, y, z)
+    }
+
+    private func heights(_ points: [SIMD3<Float>]) -> [Float] {
+        CeilingEstimator.ceilingHeights(
+            from: points,
+            floorY: 0,
+            polygon: room,
+            minimumHeight: 1.8,
+            maximumHeight: 6.0,
+            wallMargin: 0.35
+        )
+    }
+
+    @Test("Pontos altos no meio do cômodo entram")
+    func acceptsCeilingPoints() {
+        let result = heights([point(2, 2.7, 1.5), point(1.5, 2.68, 1.2)])
+        #expect(result.count == 2)
+    }
+
+    @Test("Pontos abaixo da faixa são descartados")
+    func rejectsLowPoints() {
+        // Mesa a 0,75 m e um armário a 1,7 m ficam de fora.
+        #expect(heights([point(2, 0.75, 1.5), point(2, 1.7, 1.5)]).isEmpty)
+    }
+
+    @Test("Pontos colados na parede são descartados")
+    func rejectsWallPoints() {
+        // Alto e dentro do cômodo, mas a 10 cm da parede: é a parede, não o teto.
+        // Sem este filtro toda parede alta contaminaria a estatística.
+        #expect(heights([point(2, 2.7, 0.10)]).isEmpty)
+        #expect(heights([point(0.05, 2.7, 1.5)]).isEmpty)
+    }
+
+    @Test("Pontos de outro ambiente são descartados")
+    func rejectsPointsOutsideRoom() {
+        #expect(heights([point(9, 2.7, 9)]).isEmpty)
+    }
+
+    @Test("Amostras insuficientes não produzem resumo")
+    func needsEnoughSamples() {
+        #expect(CeilingEstimator.summarize([2.5, 2.6, 2.7]) == nil)
+    }
+
+    @Test("Resumo de um teto plano converge para a mesma altura")
+    func flatCeiling() {
+        let flat = (0..<40).map { _ in Float(2.60) }
+        guard let summary = CeilingEstimator.summarize(flat) else {
+            Issue.record("deveria ter produzido resumo")
+            return
+        }
+        expectClose(summary.low, 2.60)
+        expectClose(summary.median, 2.60)
+        expectClose(summary.high, 2.60)
+        expectClose(summary.spread, 0)
+    }
+
+    @Test("Teto inclinado é descrito pela variação entre as pontas")
+    func slopedCeiling() {
+        // Rampa de 2,40 a 3,60 m, como um telhado aparente.
+        let count = 100
+        let sloped = (0..<count).map { 2.40 + Float($0) * (1.20 / Float(count - 1)) }
+        guard let summary = CeilingEstimator.summarize(sloped) else {
+            Issue.record("deveria ter produzido resumo")
+            return
+        }
+        #expect(summary.spread > 0.9, "variação de \(summary.spread) m")
+        expectClose(summary.median, 3.00, "mediana deveria ficar no meio da rampa")
+    }
+
+    @Test("Um outlier isolado não desloca as pontas")
+    func outlierResistance() {
+        // É por isso que o resumo usa percentis, e não mínimo e máximo brutos:
+        // um ponto num lustre levaria o extremo inteiro junto.
+        var samples = (0..<99).map { _ in Float(2.60) }
+        samples.append(5.90)
+
+        guard let summary = CeilingEstimator.summarize(samples) else {
+            Issue.record("deveria ter produzido resumo")
+            return
+        }
+        expectClose(summary.high, 2.60, "o percentil 90 não deveria enxergar o outlier")
+    }
+
+    @Test("Percentis interpolam entre as amostras vizinhas")
+    func percentiles() {
+        let sorted: [Float] = [1, 2, 3, 4, 5]
+        expectClose(CeilingEstimator.percentile(sorted, 0), 1)
+        expectClose(CeilingEstimator.percentile(sorted, 0.5), 3)
+        expectClose(CeilingEstimator.percentile(sorted, 1), 5)
+        expectClose(CeilingEstimator.percentile(sorted, 0.25), 2)
+    }
+}
+
 @Suite("Rotação da planta")
 struct PlanRotationTests {
 

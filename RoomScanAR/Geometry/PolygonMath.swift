@@ -131,6 +131,37 @@ enum PolygonMath {
         return isInside
     }
 
+    /// Distância do ponto até a aresta mais próxima do polígono.
+    ///
+    /// Usada para descartar pontos colados nas paredes ao varrer o teto: um
+    /// feature point a 5 cm da parede quase sempre pertence a ela, não ao teto.
+    static func distanceToBoundary(_ point: SIMD2<Float>, polygon: [SIMD2<Float>]) -> Float {
+        guard polygon.count >= 2 else { return .greatestFiniteMagnitude }
+
+        var best = Float.greatestFiniteMagnitude
+        for index in polygon.indices {
+            let a = polygon[index]
+            let b = polygon[(index + 1) % polygon.count]
+            best = min(best, distanceToSegment(point, a, b))
+        }
+        return best
+    }
+
+    private static func distanceToSegment(
+        _ point: SIMD2<Float>,
+        _ a: SIMD2<Float>,
+        _ b: SIMD2<Float>
+    ) -> Float {
+        let ab = b - a
+        let lengthSquared = simd_length_squared(ab)
+        guard lengthSquared > 1e-10 else { return simd_distance(point, a) }
+
+        // Parâmetro da projeção sobre a reta, preso ao trecho do segmento — sem
+        // isso a distância seria até a reta infinita, não até a parede.
+        let t = min(max(simd_dot(point - a, ab) / lengthSquared, 0), 1)
+        return simd_distance(point, a + ab * t)
+    }
+
     // MARK: - Paredes
 
     /// Área líquida de parede: perímetro × pé-direito, menos os vãos.
